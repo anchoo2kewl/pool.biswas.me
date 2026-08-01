@@ -1,0 +1,139 @@
+# pool.biswas.me
+
+Pool water chemistry and cost-of-ownership tracking. Log every water test and
+every dollar spent on the pool — chemicals, filters, salt cells, service calls —
+and see what a season actually costs, alongside a treatment plan computed from
+your own water.
+
+One Go binary, one embedded database, one ~74 MB container.
+
+## What it does
+
+**Water chemistry.** Records the full panel a pool store prints — free/total/
+combined chlorine, pH, alkalinity, calcium hardness, stabilizer, salt, phosphate,
+TDS, metals — and scores each reading against the correct range for your pool's
+surface and sanitizer. It computes the Langelier Saturation Index (the "WQI" on a
+Pulse Hydrometrics report) and reproduces the printed value to within 0.01, plus
+adjusted alkalinity and a 0–100 water quality score.
+
+**Treatment plans.** Exact doses for your pool's volume, ordered so they are safe
+to apply in sequence: sequester metals before adding any oxidiser, fix alkalinity
+before chasing pH. Each dose explains why it is needed.
+
+**Cross-parameter warnings.** Things a single reading cannot tell you — chlorine
+locked by stabilizer below the 5% ratio, chloramines above breakpoint, a
+collapsed pH buffer, copper that implies a corroding heat exchanger.
+
+**Season logbook and costs.** Everything that goes into or onto the pool, with
+quantity, cost, vendor and receipt. Backdating is the normal path — entries file
+themselves into whichever season contains their date. Spend rolls up by season,
+month, category, item and vendor, with a running total and season-over-season
+comparison.
+
+**AI analysis.** Optional. Any OpenAI-compatible endpoint (NVIDIA NIM,
+OpenRouter, OpenAI, a local model). It reads the test history *and* the logbook,
+so it explains why a number moved rather than restating it — connecting a
+chlorine crash to the stabilizer that washed out, or repeated salt purchases to a
+suspected leak.
+
+**An API for everything.** Every action in the interface is an API call. See
+`/docs` on a running instance.
+
+## Running it
+
+```bash
+docker run -d --name pool \
+  -p 8080:8080 \
+  -v pool-data:/data \
+  -e POOL_APP_URL=http://localhost:8080 \
+  -e POOL_ADMIN_EMAIL=you@example.com \
+  -e POOL_ADMIN_PASSWORD=change-this \
+  ghcr.io/anchoo2kewl/pool.biswas.me:latest
+```
+
+Or from source:
+
+```bash
+go run ./cmd/server      # http://localhost:8080
+go test ./...
+```
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `POOL_ADDR` | `:8080` | Listen address |
+| `POOL_DB_PATH` | `./data/pool.db` | Database file |
+| `POOL_DATA_DIR` | `./data` | Uploads and attachments |
+| `POOL_APP_URL` | `http://localhost:8080` | Public URL; OAuth callbacks derive from it |
+| `POOL_REGISTRATION` | `open` | `open`, `invite`, or `closed` |
+| `POOL_ADMIN_EMAIL` / `POOL_ADMIN_PASSWORD` | — | Seeds the first account on an empty database |
+| `POOL_AI_BASE_URL` | NVIDIA NIM | Any OpenAI-compatible endpoint |
+| `POOL_AI_API_KEY` | — | Fallback key; users can set their own |
+| `POOL_AI_MODEL` | `deepseek-ai/deepseek-v4-pro` | Default model |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enables Google sign-in |
+| `GH_CLIENT_ID` / `GH_CLIENT_SECRET` | — | Enables GitHub sign-in |
+| `OAUTH_STATE_SECRET` | random | Set a stable value, or sign-ins break across restarts |
+
+Each OAuth provider appears on the sign-in page only when both its ID and secret
+are set. Callback URLs are `${POOL_APP_URL}/auth/google/callback` and
+`${POOL_APP_URL}/auth/github/callback`.
+
+Note that a GitHub **OAuth App** permits exactly one callback URL, so this needs
+its own app rather than sharing one with another site. Google allows several
+redirect URIs on one client.
+
+## How it is built
+
+- **Go 1.26.5**, standard library HTTP routing, no web framework.
+- **[Turso](https://github.com/tursodatabase/turso)** embedded via
+  [`turso-go`](https://github.com/tursodatabase/turso-go), which loads a Rust
+  engine through `purego` — so there is no CGO, no database server, and no
+  sidecar container.
+- **No frontend build step.** The interface is plain ES modules and hand-rolled
+  SVG charts, embedded into the binary with `go:embed`. There is no npm.
+
+### Notes for anyone extending this
+
+Two things about the embedded engine are worth knowing before you hit them:
+
+1. **No window functions.** `lag`, `lead` and friends are unsupported, so running
+   totals and deltas are computed in Go after the query (see
+   `handleAnalyticsCosts`).
+2. **Stricter nullability than SQLite.** A `UNIQUE` column is treated as
+   non-nullable. Optional text columns are declared `NOT NULL DEFAULT ''`.
+
+And two about the container:
+
+3. **The binary embeds every platform's engine** — roughly 150 MB, of which one
+   image needs one. The Dockerfile vendors the module and deletes the rest,
+   taking the binary from ~165 MB to ~15 MB.
+4. **Alpine will not work.** turso-go ships a static archive for musl, which
+   `purego` cannot `dlopen`. The runtime image is `distroless/cc` — `/base` is
+   missing `libgcc_s.so.1`, which the Rust engine links against.
+
+## Deployment
+
+Push to `main` runs tests, builds a multi-arch image to GHCR, and deploys over
+SSH. The repository is public, so CI runs on GitHub-hosted runners — a
+self-hosted runner would let any fork's pull request execute code on the host.
+See `.github/workflows/ci.yml` for the required secrets.
+
+## Chemistry accuracy
+
+The chemistry engine is calibrated against a real Pulse Hydrometrics report and
+tested against it (`internal/chem/chem_test.go`). For a 58,000 L vinyl salt pool
+reading pH 7.30 / TA 106 / CH 159 / CYA 5 / 21 °C, it reproduces:
+
+| | Report | Computed |
+|---|---|---|
+| Adjusted alkalinity | 104.33 | 104.33 |
+| Saturation index (WQI) | −0.49 | −0.48 |
+| Salt to add (target 3200 ppm) | 60.262 kg | 60.26 kg |
+| Stabilizer to add (target 40 ppm) | 2.03 kg | 2.03 kg |
+
+Doses are computed for commodity chemical grades, which is why each one names the
+product strength it assumes. A store's branded equivalent may differ.
+
+This is a tool for tracking your own pool, not a substitute for a professional
+water test. Handle pool chemicals per their label instructions and never mix them.

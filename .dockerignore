@@ -1,0 +1,10 @@
+data/
+.git/
+.github/
+*.md
+!README.md
+.env
+.env.*
+/pool
+/server
+vendor/

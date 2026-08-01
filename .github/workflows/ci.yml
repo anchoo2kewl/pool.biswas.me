@@ -1,0 +1,188 @@
+# CI/CD for pool.biswas.me
+#
+# Public repository, so everything runs on GitHub-hosted runners. Self-hosted
+# runners are deliberately NOT used here: on a public repo a pull request from
+# any fork can execute workflow code, which on a self-hosted runner means
+# arbitrary code execution on the host it runs on.
+#
+# Flow:
+#   pull request  → test + build image (no push, no secrets)
+#   push to main  → test → build and push image to GHCR → deploy over SSH
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   DEPLOY_HOST         host or IP of the production server
+#   DEPLOY_USER         SSH user on that server
+#   DEPLOY_SSH_KEY      private key (PEM) authorised for that user
+#   POOL_ADMIN_EMAIL    seeds the first account on an empty database
+#   POOL_ADMIN_PASSWORD
+#   POOL_AI_API_KEY     LLM key used when a user has not set their own
+#   OAUTH_STATE_SECRET  stable random string; OAuth breaks on restart without it
+#   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+#   GH_CLIENT_ID / GH_CLIENT_SECRET
+#
+# GHCR needs no secret — GITHUB_TOKEN can push to the repo's own package.
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l . | grep -v '^vendor/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - run: go vet ./...
+
+      - name: Test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - run: go tool cover -func=coverage.out | tail -1
+
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # A pull request builds to verify the Dockerfile, but never pushes and
+      # never touches the registry.
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          POOL_ADMIN_EMAIL: ${{ secrets.POOL_ADMIN_EMAIL }}
+          POOL_ADMIN_PASSWORD: ${{ secrets.POOL_ADMIN_PASSWORD }}
+          POOL_AI_API_KEY: ${{ secrets.POOL_AI_API_KEY }}
+          OAUTH_STATE_SECRET: ${{ secrets.OAUTH_STATE_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GH_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
+          GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # The env file is written on the server, not committed anywhere.
+          cat > /tmp/pool.env <<EOF
+          POOL_ENV=production
+          POOL_APP_URL=https://pool.biswas.me
+          POOL_REGISTRATION=open
+          POOL_ADMIN_EMAIL=${POOL_ADMIN_EMAIL}
+          POOL_ADMIN_PASSWORD=${POOL_ADMIN_PASSWORD}
+          POOL_AI_API_KEY=${POOL_AI_API_KEY}
+          POOL_AI_BASE_URL=https://integrate.api.nvidia.com/v1
+          POOL_AI_MODEL=deepseek-ai/deepseek-v4-pro
+          OAUTH_STATE_SECRET=${OAUTH_STATE_SECRET}
+          GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+          GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+          GH_CLIENT_ID=${GH_CLIENT_ID}
+          GH_CLIENT_SECRET=${GH_CLIENT_SECRET}
+          EOF
+
+          scp -i ~/.ssh/deploy_key /tmp/pool.env "$DEPLOY_USER@$DEPLOY_HOST:/opt/pool/.env"
+
+          # The image name is resolved here and passed in; the heredoc is
+          # quoted so nothing else expands on the runner.
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "IMAGE='${IMAGE}:latest' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/pool
+
+          docker pull "$IMAGE"
+
+          docker rm -f pool 2>/dev/null || true
+          docker run -d \
+            --name pool \
+            --restart unless-stopped \
+            -p 127.0.0.1:8477:8080 \
+            -v /opt/pool/data:/data \
+            --env-file /opt/pool/.env \
+            "$IMAGE"
+
+          # Wait for the new container to report healthy before calling it done.
+          for i in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' pool 2>/dev/null)" = "healthy" ]; then
+              echo "pool is healthy"
+              docker image prune -f
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "container did not become healthy:"
+          docker logs --tail 50 pool
+          exit 1
+          REMOTE

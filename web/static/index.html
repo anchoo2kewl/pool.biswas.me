@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pool — know your water, and what it costs</title>
+<meta name="description" content="Track pool water chemistry and every dollar you spend on the pool, season after season. Test results, treatment plans, receipts and running costs in one place.">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  .hero { padding: clamp(3rem, 11vh, 7rem) 0 3rem; text-align: center; }
+  .hero h1 { max-width: 18ch; margin: 0 auto 1.1rem; }
+  .hero .lede { font-size: clamp(1rem, 2.4vw, 1.2rem); color: var(--fg-muted); max-width: 56ch; margin: 0 auto 2rem; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: .5rem;
+    padding: .3rem .8rem; border-radius: var(--radius-pill);
+    background: rgba(42,212,196,.1); border: 1px solid rgba(42,212,196,.28);
+    color: var(--accent); font-size: .76rem; font-weight: 600;
+    letter-spacing: .04em; margin-bottom: 1.4rem;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .gradient-text {
+    background: linear-gradient(120deg, var(--fg) 20%, var(--accent) 60%, #6aa9f0 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .features { padding: 2rem 0 4rem; }
+  .feature { padding: 1.5rem; height: 100%; }
+  .feature .ico {
+    width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
+    background: rgba(42,212,196,.12); border: 1px solid rgba(42,212,196,.25);
+    margin-bottom: .9rem; font-size: 1.15rem;
+  }
+  .feature h3 { margin-bottom: .45rem; }
+  .feature p { color: var(--fg-muted); font-size: .9rem; margin: 0; line-height: 1.6; }
+  .preview { padding: 0 0 4rem; }
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px,100%),1fr)); gap: .75rem; }
+  .foot { padding: 2.5rem 0; border-top: 1px solid var(--glass-border); color: var(--fg-dim); font-size: .84rem; }
+</style>
+</head>
+<body>
+
+<header class="appbar">
+  <a href="/" class="brand">
+    <span class="brand-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.4" stroke-linecap="round">
+        <path d="M2 16c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 5 2"/>
+        <path d="M2 21c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 5 2"/>
+        <path d="M7 14V5a2 2 0 0 1 4 0M17 14V5a2 2 0 0 0-4 0"/>
+      </svg>
+    </span>
+    <span>Pool</span>
+  </a>
+  <div class="spacer"></div>
+  <a class="btn btn-sm btn-ghost" href="/docs">API</a>
+  <a class="btn btn-sm btn-primary" href="/login">Sign in</a>
+</header>
+
+<div class="shell">
+
+  <section class="hero">
+    <span class="eyebrow"><span class="dot"></span>WATER CHEMISTRY + COST TRACKING</span>
+    <h1>Know your water. <span class="gradient-text">And what it really costs.</span></h1>
+    <p class="lede">
+      Log every water test and every dollar — chemicals, filters, salt cells, service calls — and see
+      what a pool season actually costs. With a treatment plan worked out from your own water, not a generic chart.
+    </p>
+    <div class="row" style="justify-content:center">
+      <a class="btn btn-primary" href="/login" style="min-width:190px">Get started — it's free</a>
+      <a class="btn" href="/docs">Browse the API</a>
+    </div>
+  </section>
+
+  <section class="preview">
+    <div class="strip">
+      <div class="glass stat">
+        <div class="label">Water quality</div>
+        <div class="value">47<span class="unit">/100</span></div>
+        <div class="sub"><span class="pill pill-serious"><span class="dot"></span>Action required</span></div>
+      </div>
+      <div class="glass stat">
+        <div class="label">Saturation index</div>
+        <div class="value">−0.48</div>
+        <div class="sub">Corrosive — etching surfaces</div>
+      </div>
+      <div class="glass stat">
+        <div class="label">Season spend</div>
+        <div class="value">$1,284</div>
+        <div class="sub">Season 2026 · 23 entries</div>
+      </div>
+      <div class="glass stat">
+        <div class="label">Per 10,000 L</div>
+        <div class="value">$221</div>
+        <div class="sub">comparable across pools</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="features">
+    <div class="grid grid-3">
+      <div class="glass feature">
+        <div class="ico">🧪</div>
+        <h3>Every reading, explained</h3>
+        <p>Free chlorine, pH, alkalinity, hardness, stabilizer, salt, metals — scored against the right range for your
+           surface and sanitizer. The saturation index is computed the same way your pool store computes it.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ico">💵</div>
+        <h3>What the season cost</h3>
+        <p>Chemicals, a new filter, a salt cell, the service call when nothing worked. Backdate what you've already
+           spent, attach receipts, and watch the running total build season over season.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ico">⚗️</div>
+        <h3>A plan, not a warning</h3>
+        <p>Exact doses for your pool's volume, ordered so they're safe to apply — sequester metals before you shock,
+           fix alkalinity before you chase pH. Tick them off as you go.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ico">📈</div>
+        <h3>Trends that show cause</h3>
+        <p>Every chemistry chart carries its ideal band and a mark for each logbook entry, so you can see the
+           chlorine drop and the day the stabilizer ran out on the same picture.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ico">✨</div>
+        <h3>AI that reads the history</h3>
+        <p>Bring your own key — NVIDIA, OpenRouter, OpenAI or a local model. It reads your test history and your
+           logbook, so it explains why a number moved rather than restating it.</p>
+      </div>
+      <div class="glass feature">
+        <div class="ico">🔌</div>
+        <h3>An API for everything</h3>
+        <p>Every action in the interface is an API call. Generate a key and point a script — or an agent — at it.
+           No separate integration to build.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot row">
+    <span>pool.biswas.me</span>
+    <div class="spacer"></div>
+    <a href="/docs">API documentation</a>
+    <a href="/login">Sign in</a>
+  </footer>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API · Pool</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  .doc { max-width: 920px; margin: 0 auto; }
+  .doc section { margin-bottom: 2.25rem; }
+  .doc h2 { margin-bottom: .5rem; padding-top: .5rem; }
+  .doc h3 { margin: 1.5rem 0 .5rem; }
+  .doc p { color: var(--fg-muted); font-size: .92rem; }
+  .ep { display: flex; align-items: center; gap: .6rem; font-family: var(--font-mono); font-size: .84rem; padding: .45rem 0; border-bottom: 1px solid rgba(255,255,255,.05); flex-wrap: wrap; }
+  .verb { font-weight: 600; padding: .1rem .45rem; border-radius: 5px; font-size: .72rem; min-width: 54px; text-align: center; }
+  .get { background: rgba(57,135,229,.18); color: #7ab3f2; }
+  .post { background: rgba(12,163,12,.18); color: #4ade4a; }
+  .patch { background: rgba(250,178,25,.18); color: #fbbf3f; }
+  .delete { background: rgba(208,59,59,.18); color: #e96b6b; }
+  .ep .desc { color: var(--fg-dim); font-family: var(--font); font-size: .82rem; }
+  .toc { position: sticky; top: calc(var(--header-h) + 1rem); }
+</style>
+</head>
+<body>
+
+<header class="appbar">
+  <a href="/" class="brand">
+    <span class="brand-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.4" stroke-linecap="round">
+        <path d="M2 16c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 5 2"/>
+        <path d="M2 21c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 5 2"/>
+        <path d="M7 14V5a2 2 0 0 1 4 0M17 14V5a2 2 0 0 0-4 0"/>
+      </svg>
+    </span>
+    <span>Pool</span>
+  </a>
+  <div class="spacer"></div>
+  <a class="btn btn-sm btn-primary" href="/app">Open dashboard</a>
+</header>
+
+<div class="shell doc">
+
+  <section>
+    <h1 style="font-size:2.1rem">API</h1>
+    <p>Everything the interface can do is an API call. Create a key under
+      <a href="/app">Settings → API keys</a>, then send it as a bearer token.</p>
+    <pre>curl https://pool.biswas.me/api/pools \
+  -H "Authorization: Bearer pool_sk_..."</pre>
+    <p>An <code>X-API-Key</code> header works too. Session cookies authenticate the same endpoints from the browser,
+       so there is no separate API surface to keep in sync.</p>
+  </section>
+
+  <section class="glass card">
+    <h2>Quick start</h2>
+    <p>Create a pool, record a test, and log what you spent — the three calls that matter.</p>
+    <pre>KEY="pool_sk_..."
+BASE="https://pool.biswas.me/api"
+
+# 1. Create a pool. Volume drives every dose calculation.
+curl -sX POST $BASE/pools -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{
+    "name": "Backyard pool",
+    "volume_l": 58000,
+    "sanitizer": "salt",
+    "surface": "vinyl",
+    "location": "Outdoor"
+  }'
+
+# 2. Record a water test. Every reading is optional.
+curl -sX POST $BASE/tests -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{
+    "pool_id": 1,
+    "tested_at": "2026-07-29",
+    "company_name": "Jameson Pool & Spa",
+    "free_chlorine": 0.23,
+    "total_chlorine": 0.49,
+    "total_salt": 2161,
+    "ph": 7.30,
+    "total_alkalinity": 106,
+    "calcium_hardness": 159,
+    "cyanuric_acid": 5,
+    "temperature": 21,
+    "total_copper": 0.30,
+    "iron": 0.10
+  }'
+
+# 3. Log what went in, and what it cost. Backdating is normal.
+curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{
+    "pool_id": 1,
+    "occurred_on": "2026-06-10",
+    "category": "chemical",
+    "item": "Chlorine",
+    "quantity": 10, "unit": "L",
+    "cost": 42.50,
+    "vendor": "Jameson Pool & Spa"
+  }'</pre>
+    <p>The test response comes back with the readings scored against the right ranges for your pool, the saturation
+       index, derived warnings, and a dosing plan.</p>
+  </section>
+
+  <section class="glass card">
+    <h2>Endpoints</h2>
+
+    <h3>Pools</h3>
+    <div class="ep"><span class="verb get">GET</span><span>/api/pools</span><span class="desc">list your pools</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/pools</span><span class="desc">create — <code>name</code>, <code>volume_l</code> required</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/pools/{id}</span></div>
+    <div class="ep"><span class="verb patch">PATCH</span><span>/api/pools/{id}</span></div>
+    <div class="ep"><span class="verb delete">DELETE</span><span>/api/pools/{id}</span></div>
+
+    <h3>Water tests</h3>
+    <div class="ep"><span class="verb get">GET</span><span>/api/tests?pool_id=&amp;from=&amp;to=&amp;limit=</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/tests</span><span class="desc">returns readings, alerts and doses</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/tests/{id}</span><span class="desc">full detail with treatments and notes</span></div>
+    <div class="ep"><span class="verb patch">PATCH</span><span>/api/tests/{id}</span></div>
+    <div class="ep"><span class="verb delete">DELETE</span><span>/api/tests/{id}</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/tests/{id}/insight</span><span class="desc">generate an AI analysis</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/treatments/{id}/applied</span><span class="desc"><code>{"applied": true}</code></span></div>
+
+    <h3>Logbook and costs</h3>
+    <div class="ep"><span class="verb get">GET</span><span>/api/log?pool_id=&amp;season_id=&amp;category=&amp;from=&amp;to=</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/log</span><span class="desc">accepts <code>cost</code> (dollars) or <code>cost_cents</code></span></div>
+    <div class="ep"><span class="verb patch">PATCH</span><span>/api/log/{id}</span></div>
+    <div class="ep"><span class="verb delete">DELETE</span><span>/api/log/{id}</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/seasons?pool_id=</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/seasons</span><span class="desc">entries re-file into the matching season automatically</span></div>
+
+    <h3>Attachments</h3>
+    <div class="ep"><span class="verb post">POST</span><span>/api/attachments</span><span class="desc">multipart; images recompressed, 25 MB limit</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/attachments?pool_id=&amp;kind=&amp;test_id=</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/attachments/{id}/file</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/attachments/{id}/link</span><span class="desc">attach to a log entry</span></div>
+    <div class="ep"><span class="verb delete">DELETE</span><span>/api/attachments/{id}</span></div>
+
+    <h3>Analytics</h3>
+    <div class="ep"><span class="verb get">GET</span><span>/api/analytics/summary?pool_id=</span><span class="desc">dashboard headline</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/analytics/costs?pool_id=&amp;season_id=</span><span class="desc">by category, month, item, vendor, cumulative</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/analytics/trends?pool_id=</span><span class="desc">series with ideal bands, plus logbook events</span></div>
+
+    <h3>Account</h3>
+    <div class="ep"><span class="verb get">GET</span><span>/api/me</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/keys</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/keys</span><span class="desc">plaintext key returned once</span></div>
+    <div class="ep"><span class="verb delete">DELETE</span><span>/api/keys/{id}</span></div>
+    <div class="ep"><span class="verb patch">PUT</span><span>/api/me/ai</span><span class="desc">your own LLM key, base URL and model</span></div>
+  </section>
+
+  <section class="glass card">
+    <h2>Uploading a receipt</h2>
+    <pre>curl -sX POST $BASE/attachments \
+  -H "Authorization: Bearer $KEY" \
+  -F "file=@receipt.jpg" \
+  -F "pool_id=1" \
+  -F "total=86.40" \
+  -F "purchased_on=2026-06-10" \
+  -F "vendor=Jameson Pool & Spa"</pre>
+    <p>Images are downscaled to 1600px on the long edge and re-encoded, so a 12 MB phone photo typically lands
+       under 300 KB. The response reports both sizes. PDFs are stored as uploaded.</p>
+  </section>
+
+  <section class="glass card">
+    <h2>Reference</h2>
+    <h3>Log entry categories</h3>
+    <p><code>chemical</code> · <code>equipment</code> · <code>service</code> · <code>maintenance</code> ·
+       <code>utility</code> · <code>opening</code> · <code>closing</code> · <code>other</code></p>
+    <h3>Test reading fields</h3>
+    <p><code>free_chlorine</code> <code>total_chlorine</code> <code>combined_chlorine</code> <code>total_salt</code>
+       <code>bromine</code> <code>ph</code> <code>total_alkalinity</code> <code>calcium_hardness</code>
+       <code>cyanuric_acid</code> <code>phosphate</code> <code>borate</code> <code>tds</code> <code>temperature</code>
+       <code>total_copper</code> <code>free_copper</code> <code>combined_copper</code> <code>iron</code></p>
+    <p>Combined chlorine is derived from total minus free when you don't supply it. Adjusted alkalinity, the saturation
+       index and the 0–100 score are always computed server-side.</p>
+    <h3>Errors</h3>
+    <p>Failures return the matching HTTP status with <code>{"error": "..."}</code>. A revoked or expired key returns
+       <code>401</code>.</p>
+  </section>
+
+  <footer class="row" style="padding:2rem 0;border-top:1px solid var(--glass-border);color:var(--fg-dim);font-size:.84rem">
+    <span>pool.biswas.me</span><div class="spacer"></div><a href="/app">Dashboard</a>
+  </footer>
+</div>
+
+</body>
+</html>

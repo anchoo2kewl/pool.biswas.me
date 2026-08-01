@@ -1,0 +1,14 @@
+services:
+  pool:
+    image: ghcr.io/anchoo2kewl/pool.biswas.me:latest
+    # Use `docker compose up --build` to run from source instead.
+    build: .
+    container_name: pool
+    restart: unless-stopped
+    ports:
+      # Bound to loopback: a reverse proxy terminates TLS in front of it.
+      - "127.0.0.1:8477:8080"
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env

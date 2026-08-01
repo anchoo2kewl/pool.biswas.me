@@ -1,0 +1,11 @@
+data/
+vendor/
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+/pool
+/server
+coverage.out
+.DS_Store

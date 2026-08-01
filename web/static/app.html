@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dashboard · Pool</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<header class="appbar">
+  <a href="/app" class="brand">
+    <span class="brand-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#04140f" stroke-width="2.4" stroke-linecap="round">
+        <path d="M2 16c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 5 2"/>
+        <path d="M2 21c2.5 0 2.5-2 5-2s2.5 2 5 2 2.5-2 5-2 2.5 2 5 2"/>
+        <path d="M7 14V5a2 2 0 0 1 4 0M17 14V5a2 2 0 0 0-4 0"/>
+      </svg>
+    </span>
+    <span>Pool</span>
+  </a>
+
+  <select id="pool-select" aria-label="Select pool" style="max-width:220px;min-height:38px"></select>
+
+  <div class="spacer"></div>
+
+  <button class="btn btn-sm" id="add-log">Log cost</button>
+  <button class="btn btn-sm btn-primary" id="add-test">Add test</button>
+  <span class="small dim nowrap hidden-mobile" id="user-email" style="margin-left:.5rem"></span>
+  <button class="btn btn-sm btn-ghost" id="sign-out">Sign out</button>
+</header>
+
+<div class="shell">
+  <nav class="tabs glass" style="padding:.35rem;margin-bottom:1rem" aria-label="Sections">
+    <button class="tab active" data-view="overview">Overview</button>
+    <button class="tab" data-view="trends">Trends</button>
+    <button class="tab" data-view="logbook">Logbook</button>
+    <button class="tab" data-view="costs">Costs</button>
+    <button class="tab" data-view="tests">Tests</button>
+    <button class="tab" data-view="settings">Settings</button>
+  </nav>
+
+  <div id="loading" class="hidden" style="position:fixed;top:var(--header-h);left:0;right:0;height:2px;background:var(--accent);z-index:60;animation:shimmer 1s linear infinite"></div>
+
+  <main id="view"></main>
+</div>
+
+<style>
+  @media (max-width: 760px) {
+    #user-email { display: none; }
+    #add-log { display: none; }
+  }
+</style>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>
