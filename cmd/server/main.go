@@ -18,6 +18,7 @@ import (
 	"github.com/biswas-dev/pool/internal/api"
 	"github.com/biswas-dev/pool/internal/auth"
 	"github.com/biswas-dev/pool/internal/config"
+	"github.com/biswas-dev/pool/internal/demo"
 	"github.com/biswas-dev/pool/internal/store"
 	"github.com/biswas-dev/pool/web"
 )
@@ -50,6 +51,16 @@ func main() {
 
 	if err := seedAdmin(db, cfg); err != nil {
 		log.Fatalf("seed admin: %v", err)
+	}
+
+	if cfg.DemoEnabled {
+		if err := demo.Ensure(db, cfg.DemoEmail, cfg.DemoPassword); err != nil {
+			// A broken demo must not stop the application from serving.
+			log.Printf("seed demo account: %v", err)
+		} else {
+			log.Printf("demo account ready (%s, resets every %dh)", cfg.DemoEmail, cfg.DemoResetHours)
+			go demo.ResetLoop(db, cfg.DemoEmail, time.Duration(cfg.DemoResetHours)*time.Hour)
+		}
 	}
 
 	static, err := fs.Sub(web.Files, "static")

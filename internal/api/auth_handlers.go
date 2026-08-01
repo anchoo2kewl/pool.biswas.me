@@ -10,6 +10,7 @@ import (
 
 	"github.com/biswas-dev/pool/internal/auth"
 	"github.com/biswas-dev/pool/internal/config"
+	"github.com/biswas-dev/pool/internal/demo"
 	"github.com/biswas-dev/pool/internal/store"
 )
 
@@ -26,6 +27,10 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 		"google_enabled": s.Cfg.GoogleEnabled(),
 		"ai_enabled":     s.Cfg.AIEnabled(),
 		"env":            s.Cfg.Env,
+		"demo_enabled":   s.Cfg.DemoEnabled,
+		// Published on purpose: this is the point of a demo account.
+		"demo_email":    s.Cfg.DemoEmail,
+		"demo_password": s.Cfg.DemoPassword,
 	})
 }
 
@@ -132,6 +137,38 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.startSession(w, r, user)
 	writeJSON(w, http.StatusOK, user)
+}
+
+// handleDemoLogin signs the visitor straight into the demo account, so the
+// landing page can offer a single button rather than asking them to copy
+// credentials.
+func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.Cfg.DemoEnabled {
+		writeError(w, http.StatusNotFound, "the demo is not enabled on this instance")
+		return
+	}
+	user, err := s.DB.UserByEmail(s.Cfg.DemoEmail)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "the demo account is not ready yet")
+		return
+	}
+	s.startSession(w, r, user)
+	writeJSON(w, http.StatusOK, user)
+}
+
+// handleDemoReset rebuilds the demo data on request, so a visitor who has made
+// a mess can put it back without waiting for the timer.
+func (s *Server) handleDemoReset(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	if !s.Cfg.DemoEnabled || u.Email != s.Cfg.DemoEmail {
+		writeError(w, http.StatusForbidden, "only the demo account can be reset")
+		return
+	}
+	if err := demo.Reset(s.DB, u.ID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "demo data reset"})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

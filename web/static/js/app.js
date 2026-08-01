@@ -39,6 +39,7 @@ async function boot() {
   }
 
   $('#user-email').textContent = state.user.name || state.user.email;
+  if (state.config.demo_enabled && state.user.email === state.config.demo_email) showDemoBanner();
   await loadPools();
   wireChrome();
   onResize(() => render());
@@ -70,6 +71,9 @@ async function loadPool() {
     ]);
     state.summary = summary;
     state.seasons = seasons;
+    // The summary is deliberately lean; notes and attachments come from the
+    // test's own detail endpoint.
+    state.detail = summary.latest_test ? await api.test(summary.latest_test.id).catch(() => null) : null;
     render();
   } catch (e) {
     toast(e.message, 'err');
@@ -237,10 +241,18 @@ function renderOverview(root) {
 
         <div class="glass card">
           <div class="card-head">
-            <h3>AI analysis</h3>
-            ${state.ai?.configured ? '' : '<span class="pill pill-unknown"><span class="dot"></span>Not configured</span>'}
+            <h3>Notes &amp; analysis</h3>
+            ${state.ai?.configured ? '' : '<span class="pill pill-unknown"><span class="dot"></span>AI not configured</span>'}
           </div>
           <div id="ai-panel"></div>
+        </div>
+
+        <div class="glass card">
+          <div class="card-head">
+            <h3>Test sheet</h3>
+            <span class="sub">the printout this test came from</span>
+          </div>
+          <div id="sheet-panel"></div>
         </div>
       </div>
     </div>
@@ -259,7 +271,8 @@ function renderOverview(root) {
 
   lsiGauge($('#lsi-gauge'), t.lsi ?? null);
   renderTreatments($('#treatments'), s.treatments || []);
-  renderAIPanel($('#ai-panel'), t);
+  renderNotesPanel($('#ai-panel'), t);
+  renderSheetPanel($('#sheet-panel'), t);
   cadenceStrip($('#cadence'), (state.summary?.cadence) || []);
   renderRecentLog($('#recent-log'), s.recent_log || []);
 
@@ -328,29 +341,101 @@ function displayAmount(t) {
   return `${fmt.num(t.amount)} ${t.unit}`;
 }
 
-function renderAIPanel(el, test) {
-  const aiNotes = (state.summary?.notes || []).filter(n => n.kind === 'ai');
+function renderNotesPanel(el, test) {
+  const notes = (state.detail?.notes) || [];
   el.innerHTML = `
-    <div id="ai-body">
-      ${aiNotes.length ? renderNote(aiNotes[0]) : `<p class="small muted">Generate an explanation of this test that reads the history and your logbook, not just the numbers.</p>`}
+    <div id="notes-list" class="stack" style="gap:.6rem">
+      ${notes.length ? notes.map(renderNote).join('')
+        : `<p class="small muted" style="margin:0">No notes yet. Add what you observed, or let the AI read the history and the logbook and explain what changed.</p>`}
     </div>
-    <button class="btn btn-block" id="gen-insight" style="margin-top:.75rem">
-      ${aiNotes.length ? 'Re-analyse' : 'Analyse this test'}
-    </button>`;
+    <div class="field" style="margin-top:.85rem">
+      <label for="note-body">Add a note</label>
+      <textarea id="note-body" placeholder="Water was cloudy after the storm; brushed the walls and ran the pump overnight." style="min-height:64px"></textarea>
+    </div>
+    <div class="row" style="gap:.5rem;margin-top:.5rem">
+      <button class="btn btn-sm" id="save-note">Save note</button>
+      <div class="spacer"></div>
+      <button class="btn btn-sm btn-primary" id="gen-insight">
+        ${notes.some(n => n.kind === 'ai') ? 'Re-analyse' : 'Analyse with AI'}
+      </button>
+    </div>`;
 
-  $('#gen-insight').addEventListener('click', async () => {
-    const btn = $('#gen-insight');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Analysing — this can take a minute…';
+  $('#save-note', el).addEventListener('click', async () => {
+    const body = $('#note-body', el).value.trim();
+    if (!body) return toast('Write something first', 'err');
     try {
-      const res = await api.insight(test.id);
-      $('#ai-body').innerHTML = renderNote(res.note);
+      await api.createNote({ pool_id: state.pool.id, test_id: test.id, body });
+      toast('Note saved', 'ok');
+      state.detail = await api.test(test.id);
+      renderNotesPanel(el, test);
+    } catch (e) { toast(e.message, 'err'); }
+  });
+
+  $('#gen-insight', el).addEventListener('click', async () => {
+    const btn = $('#gen-insight', el);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Analysing — up to a minute…';
+    try {
+      await api.insight(test.id);
+      state.detail = await api.test(test.id);
+      renderNotesPanel(el, test);
       toast('Analysis complete', 'ok');
     } catch (e) {
       toast(e.message, 'err');
-    } finally {
       btn.disabled = false;
-      btn.textContent = 'Re-analyse';
+      btn.textContent = 'Analyse with AI';
+    }
+  });
+
+  $$('[data-del-note]', el).forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Delete this note?')) return;
+    try {
+      await api.deleteNote(Number(b.dataset.delNote), state.pool.id);
+      state.detail = await api.test(test.id);
+      renderNotesPanel(el, test);
+      toast('Note deleted', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  }));
+}
+
+// The scanned or photographed analysis sheet a test came from.
+function renderSheetPanel(el, test) {
+  const sheets = (state.detail?.attachments) || [];
+  el.innerHTML = `
+    ${sheets.length ? `<div class="thumb-grid" style="margin-bottom:.75rem">
+      ${sheets.map(a => `
+        <a href="/api/attachments/${a.id}/file" target="_blank" rel="noopener" title="${escapeHtml(a.filename)}">
+          ${a.content_type.startsWith('image/')
+            ? `<img class="thumb" src="/api/attachments/${a.id}/file" alt="${escapeHtml(a.filename)}" loading="lazy">`
+            : `<div class="thumb" style="display:grid;place-items:center;font-size:.75rem;color:var(--fg-muted)">${escapeHtml(a.filename)}</div>`}
+        </a>`).join('')}
+    </div>` : `<p class="small muted" style="margin:0 0 .75rem">Photograph the printout and keep it with the readings — useful when a number looks wrong months later.</p>`}
+    <input type="file" id="sheet-file" accept="image/*,application/pdf" style="display:none">
+    <button class="btn btn-sm btn-block" id="sheet-upload">${sheets.length ? 'Add another photo' : 'Attach the test sheet'}</button>`;
+
+  $('#sheet-upload', el).addEventListener('click', () => $('#sheet-file', el).click());
+  $('#sheet-file', el).addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const btn = $('#sheet-upload', el);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Uploading…';
+    const form = new FormData();
+    form.append('file', file);
+    form.append('pool_id', state.pool.id);
+    form.append('test_id', test.id);
+    form.append('kind', 'test_sheet');
+    try {
+      const rec = await api.upload('/api/attachments', form);
+      const saved = rec.original_bytes && rec.size_bytes < rec.original_bytes
+        ? ` — ${Math.round((1 - rec.size_bytes / rec.original_bytes) * 100)}% smaller` : '';
+      toast(`Sheet attached${saved}`, 'ok');
+      state.detail = await api.test(test.id);
+      renderSheetPanel(el, test);
+    } catch (err) {
+      toast(err.message, 'err');
+      btn.disabled = false;
+      btn.textContent = 'Attach the test sheet';
     }
   });
 }
@@ -361,6 +446,8 @@ function renderNote(n) {
       <span class="pill ${n.kind === 'ai' ? 'pill-accent' : 'pill-unknown'}"><span class="dot"></span>${n.kind === 'ai' ? 'AI' : 'Note'}</span>
       <span>${fmt.date(n.created_at)}</span>
       ${n.model ? `<span class="dim">${escapeHtml(n.model)}</span>` : ''}
+      <div class="spacer"></div>
+      <button class="btn btn-sm btn-ghost btn-danger" data-del-note="${n.id}" title="Delete note" style="min-height:24px;padding:0 .4rem">×</button>
     </div>
     <div class="body">${markdownish(n.body)}</div>
   </div>`;
@@ -1087,6 +1174,33 @@ function openKeyForm() {
 function skeletonCards(n) {
   return `<div class="grid grid-2">${Array.from({ length: n }, () =>
     '<div class="glass card"><div class="skeleton" style="height:180px"></div></div>').join('')}</div>`;
+}
+
+/* A visitor in the demo should know it is a demo, and be able to put it back
+ * the way they found it. */
+function showDemoBanner() {
+  const bar = document.createElement('div');
+  bar.className = 'demo-bar';
+  bar.innerHTML = `
+    <span><strong>Demo account.</strong> Change anything you like — the data rebuilds itself regularly.</span>
+    <div class="spacer"></div>
+    <button class="btn btn-sm" id="demo-reset">Reset the data</button>
+    <a class="btn btn-sm btn-primary" href="/login?mode=register">Create your own</a>`;
+  document.querySelector('.appbar').after(bar);
+  $('#demo-reset').addEventListener('click', async () => {
+    const btn = $('#demo-reset');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Resetting…';
+    try {
+      await api.post('/api/demo/reset', {});
+      toast('Demo data reset', 'ok');
+      state.trends = state.costs = null;
+      state.logEntries = []; state.tests = [];
+      await loadPools();
+    } catch (e) { toast(e.message, 'err'); }
+    btn.disabled = false;
+    btn.textContent = 'Reset the data';
+  });
 }
 
 /* Inline handlers in generated markup need these on the window. */

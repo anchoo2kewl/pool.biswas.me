@@ -39,6 +39,16 @@ suspected leak.
 **An API for everything.** Every action in the interface is an API call. See
 `/docs` on a running instance.
 
+## Demo
+
+A public demo account is seeded on startup and rebuilt every two hours, so
+visitors can change anything without spoiling it for the next person:
+
+- **<https://pool.biswas.me>** — "Explore the live demo" signs straight in
+- Credentials, if you want them: `demo@pool.biswas.me` / `poolside`
+
+Disable it with `POOL_DEMO=false`.
+
 ## Running it
 
 ```bash
@@ -68,6 +78,9 @@ go test ./...
 | `POOL_APP_URL` | `http://localhost:8080` | Public URL; OAuth callbacks derive from it |
 | `POOL_REGISTRATION` | `open` | `open`, `invite`, or `closed` |
 | `POOL_ADMIN_EMAIL` / `POOL_ADMIN_PASSWORD` | — | Seeds the first account on an empty database |
+| `POOL_DEMO` | `true` | Seed and serve the public demo account |
+| `POOL_DEMO_EMAIL` / `POOL_DEMO_PASSWORD` | `demo@pool.biswas.me` / `poolside` | Demo credentials, shown publicly on the sign-in page |
+| `POOL_DEMO_RESET_HOURS` | `2` | How often the demo data is rebuilt |
 | `POOL_AI_BASE_URL` | NVIDIA NIM | Any OpenAI-compatible endpoint |
 | `POOL_AI_API_KEY` | — | Fallback key; users can set their own |
 | `POOL_AI_MODEL` | `deepseek-ai/deepseek-v4-pro` | Default model |

@@ -48,6 +48,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /api/auth/demo", s.handleDemoLogin)
 	mux.HandleFunc("GET /auth/{provider}/start", s.handleOAuthStart)
 	mux.HandleFunc("GET /auth/{provider}/callback", s.handleOAuthCallback)
 
@@ -57,6 +58,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/me", authed(s.handleMe))
 	mux.Handle("PATCH /api/me", authed(s.handleUpdateMe))
 	mux.Handle("PUT /api/me/ai", authed(s.handleSetAISettings))
+	mux.Handle("POST /api/demo/reset", authed(s.handleDemoReset))
 
 	mux.Handle("GET /api/keys", authed(s.handleListAPIKeys))
 	mux.Handle("POST /api/keys", authed(s.handleCreateAPIKey))

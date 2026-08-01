@@ -70,9 +70,11 @@
       what a pool season actually costs. With a treatment plan worked out from your own water, not a generic chart.
     </p>
     <div class="row" style="justify-content:center">
-      <a class="btn btn-primary" href="/login" style="min-width:190px">Get started — it's free</a>
-      <a class="btn" href="/docs">Browse the API</a>
+      <button class="btn btn-primary" id="demo-cta" style="min-width:200px">Explore the live demo</button>
+      <a class="btn" href="/login?mode=register">Create an account</a>
+      <a class="btn btn-ghost" href="/docs">Browse the API</a>
     </div>
+    <p class="small dim" style="margin-top:.85rem">No sign-up needed — the demo opens a real account with two seasons of data.</p>
   </section>
 
   <section class="preview">
@@ -149,5 +151,21 @@
   </footer>
 </div>
 
+<script type="module">
+  import { api } from '/js/api.js';
+  const btn = document.querySelector('#demo-cta');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Opening the demo…';
+    try {
+      await api.post('/api/auth/demo', {});
+      window.location.href = '/app';
+    } catch {
+      // If the demo is unavailable, fall back to the normal sign-in page
+      // rather than leaving a dead button.
+      window.location.href = '/login';
+    }
+  });
+</script>
 </body>
 </html>

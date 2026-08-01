@@ -50,6 +50,14 @@ type Config struct {
 	AdminEmail    string
 	AdminPassword string
 
+	// The public demo account. Its credentials are deliberately published on
+	// the sign-in page, and its data is rebuilt on a timer so visitors can
+	// change anything without spoiling it for the next person.
+	DemoEnabled    bool
+	DemoEmail      string
+	DemoPassword   string
+	DemoResetHours int
+
 	SecureCookies bool
 }
 
@@ -80,6 +88,11 @@ func Load() *Config {
 
 		AdminEmail:    env("POOL_ADMIN_EMAIL", ""),
 		AdminPassword: env("POOL_ADMIN_PASSWORD", ""),
+
+		DemoEnabled:    env("POOL_DEMO", "true") == "true",
+		DemoEmail:      env("POOL_DEMO_EMAIL", "demo@pool.biswas.me"),
+		DemoPassword:   env("POOL_DEMO_PASSWORD", "poolside"),
+		DemoResetHours: envInt("POOL_DEMO_RESET_HOURS", 2),
 	}
 
 	switch c.Registration {
