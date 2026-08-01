@@ -127,6 +127,8 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GH_CLIENT_ID: ${{ secrets.GH_CLIENT_ID }}
           GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
           set -euo pipefail
 
@@ -157,11 +159,15 @@ jobs:
           # The image name is resolved here and passed in; the heredoc is
           # quoted so nothing else expands on the runner.
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
-            "IMAGE='${IMAGE}:latest' bash -s" <<'REMOTE'
+            "IMAGE='${IMAGE}:latest' GHCR_USER='${GHCR_USER}' GHCR_TOKEN='${GHCR_TOKEN}' bash -s" <<'REMOTE'
           set -euo pipefail
           cd /opt/pool
 
+          # The package is private, so authenticate the pull with the token
+          # this workflow run already has. It expires when the run ends.
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
           docker pull "$IMAGE"
+          docker logout ghcr.io
 
           docker rm -f pool 2>/dev/null || true
           docker run -d \
