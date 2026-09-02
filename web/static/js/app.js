@@ -165,7 +165,7 @@ function renderOverview(root) {
           <h3 style="margin-bottom:.5rem">No water tests yet</h3>
           <p class="muted small">Add your first test — from a strip, a kit, or a printout from the pool store — and the dashboard fills in. Photograph the printout and the readings transcribe themselves.</p>
           <div class="row" style="justify-content:center;gap:.5rem">
-            <button class="btn btn-primary" onclick="window.__openPhotoTestForm()">📷 Photograph a test sheet</button>
+            <button class="btn btn-primary" onclick="window.__openPhotoTestForm()">📷 Upload a test sheet</button>
             <button class="btn" onclick="window.__openTestForm()">Enter one by hand</button>
           </div>
         </div>
@@ -737,7 +737,7 @@ function renderTests(root) {
       <div class="row">
         <h3 style="margin:0">Water tests</h3>
         <div class="spacer"></div>
-        <button class="btn btn-sm" onclick="window.__openPhotoTestForm()">📷 From a photo</button>
+        <button class="btn btn-sm" onclick="window.__openPhotoTestForm()">📷 Upload a test sheet</button>
         <button class="btn btn-sm btn-primary" onclick="window.__openTestForm()">Add test</button>
       </div>
     </div>
@@ -765,7 +765,7 @@ function renderTests(root) {
         </tbody></table></div>`
       : `<div class="empty"><div class="big">🧪</div><p class="muted">No tests recorded yet.</p>
          <div class="row" style="justify-content:center;gap:.5rem">
-           <button class="btn btn-primary" onclick="window.__openPhotoTestForm()">📷 Photograph a test sheet</button>
+           <button class="btn btn-primary" onclick="window.__openPhotoTestForm()">📷 Upload a test sheet</button>
            <button class="btn" onclick="window.__openTestForm()">Enter one by hand</button>
          </div></div>`}
     </div>`;
@@ -1106,7 +1106,7 @@ function renderPhotoResult(body, detail, close) {
       <div class="row" style="align-items:baseline">
         <h3 style="margin:0">Read ${readings.length} reading${readings.length === 1 ? '' : 's'}</h3>
         <div class="spacer"></div>
-        <span class="small dim">${escapeHtml(parsed.model || '')}${confidence ? ` · ${confidence}% confident` : ''}</span>
+        <span class="small dim">${parsed.test_count ? `test #${parsed.test_count} · ` : ''}${escapeHtml(parsed.model || '')}${confidence ? ` · ${confidence}% confident` : ''}</span>
       </div>
 
       ${readings.length ? `<div class="grid grid-2" style="gap:.5rem">
@@ -1128,6 +1128,8 @@ function renderPhotoResult(body, detail, close) {
           the sheet and enter them by hand if they are real.</p>
       </div>` : ''}
 
+      ${poolProfileHTML(parsed.pool)}
+
       ${detail.insight_error ? `<p class="small" style="margin:0;color:var(--warning)">
         The test was saved, but the analysis failed: ${escapeHtml(detail.insight_error)}. You can run it
         again from the test.</p>` : ''}
@@ -1143,6 +1145,80 @@ function renderPhotoResult(body, detail, close) {
     </div>`;
 
   $('#p-done', body).addEventListener('click', () => { close(); switchView('overview'); });
+
+  const applyBtn = $('#p-apply-pool', body);
+  if (applyBtn) {
+    applyBtn.addEventListener('click', async () => {
+      applyBtn.disabled = true;
+      applyBtn.innerHTML = '<span class="spinner"></span> Updating…';
+      try {
+        await api.updatePool(state.pool.id, poolPatch(parsed.pool));
+        applyBtn.textContent = 'Pool updated';
+        toast('Pool profile updated from the sheet', 'ok');
+        await loadPools();
+      } catch (e) {
+        toast(e.message, 'err');
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Update the pool to match';
+      }
+    });
+  }
+}
+
+/* The pool description printed on the sheet. It is only ever offered, never
+ * applied on its own: volume is what every dose is calculated from, and a
+ * number read off a photograph should not rewrite it behind the owner's back.
+ * Only the fields that actually differ are shown, so an unchanged profile
+ * stays quiet. */
+const POOL_SHEET_FIELDS = [
+  ['volume_l', 'Volume', v => `${Number(v).toLocaleString()} L`],
+  ['surface', 'Surface'],
+  ['sanitizer', 'Sanitizer'],
+  ['water_type', 'Type'],
+  ['treatment_profile', 'Treatment profile'],
+  ['grade', 'Grade'],
+  ['location', 'Location'],
+  ['customer_name', 'Customer'],
+  ['site_address', 'Site'],
+];
+
+function poolDifferences(sheet) {
+  if (!sheet || !state.pool) return [];
+  return POOL_SHEET_FIELDS
+    .filter(([key]) => {
+      const read = sheet[key], have = state.pool[key];
+      if (read === null || read === undefined || read === '') return false;
+      if (key === 'volume_l') return Math.abs(Number(read) - Number(have || 0)) > 1;
+      return String(read).toLowerCase() !== String(have || '').toLowerCase();
+    });
+}
+
+function poolPatch(sheet) {
+  const patch = {};
+  for (const [key] of poolDifferences(sheet)) patch[key] = sheet[key];
+  return patch;
+}
+
+function poolProfileHTML(sheet) {
+  const diffs = poolDifferences(sheet);
+  if (!diffs.length) return '';
+  return `<div class="glass card" style="padding:.75rem">
+    <p class="small" style="margin:0 0 .5rem"><strong>The sheet describes this pool differently.</strong>
+      Volume is what every dose is calculated from, so nothing has been changed.</p>
+    <div class="stack" style="gap:.3rem">
+      ${diffs.map(([key, label, fmtFn]) => {
+        const read = sheet[key];
+        const have = state.pool[key];
+        return `<div class="row small" style="gap:.5rem">
+          <span class="dim" style="min-width:8.5rem">${escapeHtml(label)}</span>
+          <span class="dim" style="text-decoration:line-through">${escapeHtml(String(have || '—'))}</span>
+          <span>→</span>
+          <strong>${escapeHtml(fmtFn ? fmtFn(read) : String(read))}</strong>
+        </div>`;
+      }).join('')}
+    </div>
+    <button class="btn btn-sm btn-block" style="margin-top:.6rem" id="p-apply-pool">Update the pool to match</button>
+  </div>`;
 }
 
 const CATEGORIES = ['chemical', 'equipment', 'service', 'maintenance', 'utility', 'opening', 'closing', 'other'];

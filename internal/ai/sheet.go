@@ -19,6 +19,14 @@ type SheetReading struct {
 	Company string `json:"company"`
 	// Operator is the named tester, if the sheet carries one.
 	Operator string `json:"operator"`
+	// TestCount is the sequence number the store prints on the sheet, so a
+	// season's tests can be tied back to the store's own numbering.
+	TestCount *int64 `json:"test_count"`
+	// Pool is the profile printed at the top of the sheet. It describes the
+	// body of water rather than the test, and is offered to the owner as an
+	// update rather than applied: a volume read off a photograph must not
+	// silently rewrite what every dose is calculated from.
+	Pool *PoolProfile `json:"pool,omitempty"`
 	// Values holds the readings, keyed by this app's field names. A key is
 	// present only when the model actually read a number for it.
 	Values map[string]float64 `json:"values"`
@@ -35,6 +43,46 @@ type SheetReading struct {
 
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+}
+
+// PoolProfile is the pool description printed on a test sheet.
+type PoolProfile struct {
+	CustomerName     string   `json:"customer_name,omitempty"`
+	SiteAddress      string   `json:"site_address,omitempty"`
+	VolumeL          *float64 `json:"volume_l,omitempty"`
+	WaterType        string   `json:"water_type,omitempty"`
+	TreatmentProfile string   `json:"treatment_profile,omitempty"`
+	Grade            string   `json:"grade,omitempty"`
+	Surface          string   `json:"surface,omitempty"`
+	Sanitizer        string   `json:"sanitizer,omitempty"`
+	Location         string   `json:"location,omitempty"`
+}
+
+// Empty reports whether the profile carries nothing worth offering.
+func (p *PoolProfile) Empty() bool {
+	return p == nil || (p.CustomerName == "" && p.SiteAddress == "" && p.VolumeL == nil &&
+		p.WaterType == "" && p.TreatmentProfile == "" && p.Grade == "" &&
+		p.Surface == "" && p.Sanitizer == "" && p.Location == "")
+}
+
+// normalise tidies the profile and drops a volume no pool could have.
+func (p *PoolProfile) normalise() {
+	if p == nil {
+		return
+	}
+	p.CustomerName = trimTo(p.CustomerName, 120)
+	p.SiteAddress = trimTo(p.SiteAddress, 200)
+	p.WaterType = trimTo(p.WaterType, 60)
+	p.TreatmentProfile = trimTo(p.TreatmentProfile, 120)
+	p.Grade = trimTo(p.Grade, 60)
+	p.Surface = strings.ToLower(trimTo(p.Surface, 40))
+	p.Sanitizer = strings.ToLower(trimTo(p.Sanitizer, 40))
+	p.Location = trimTo(p.Location, 60)
+	// A litre figure outside this range is a misread rather than a pool —
+	// and it is the number every dose is calculated from.
+	if p.VolumeL != nil && (*p.VolumeL < 500 || *p.VolumeL > 5_000_000) {
+		p.VolumeL = nil
+	}
 }
 
 // Empty reports whether nothing usable was read.
@@ -83,7 +131,10 @@ step with a chemistry vocabulary, not an analyst: read what is printed, nothing 
 
 Reply with a single JSON object and nothing else:
 {"tested_at":"YYYY-MM-DD or empty","company":"who performed the test","operator":"named tester or empty",
- "values":{"field":number},"notes":"one short caveat about legibility","confidence":0.0-1.0}
+ "test_count":number or null,"values":{"field":number},
+ "pool":{"customer_name":"","site_address":"","volume_l":number or null,"water_type":"","treatment_profile":"",
+         "grade":"","surface":"","sanitizer":"","location":""},
+ "notes":"one short caveat about legibility","confidence":0.0-1.0}
 
 The only permitted keys in "values" are:
   free_chlorine, total_chlorine, combined_chlorine, bromine        (ppm)
@@ -93,25 +144,61 @@ The only permitted keys in "values" are:
   phosphate                                                        (ppb)
   temperature                                                      (degrees Celsius)
   total_copper, free_copper, combined_copper, iron                 (ppm)
-  wqi                                                              (the saturation / water quality index as printed)
+  wqi                                                              (the water quality / saturation index as printed)
 
 Rules:
-- Omit a key entirely when the sheet does not show that reading. Never guess a
-  plausible value, and never carry one over from a different row.
-- Convert to the units above and say so in "notes" when you do. Temperature
-  printed in Fahrenheit becomes Celsius. Salt printed in g/L or ppt becomes ppm
-  (1 g/L = 1000 ppm). Phosphate printed in ppm becomes ppb (multiply by 1000).
-- Stabilizer, CYA, isocyanuric acid and conditioner all mean cyanuric_acid.
-  Hardness or "CH" means calcium_hardness. "TA" means total_alkalinity. "FC"
-  and "TC" mean free and total chlorine.
+- "N/T", "NT", "N/A", "--" and a blank cell all mean NOT TESTED. Omit the key
+  entirely. Never write 0 for one: zero is a reading, and the difference
+  between "no stabilizer in the water" and "nobody measured it" changes the
+  advice completely.
+- Omit a key when the sheet does not show that reading. Never guess a plausible
+  value, and never carry one over from a different row.
+- Convert to the units above and say so in "notes" when you do. Fahrenheit
+  becomes Celsius. Salt in g/L or ppt becomes ppm (1 g/L = 1000 ppm).
+- Stabilizer, CYA, conditioner and isocyanuric acid all mean cyanuric_acid.
+  CH means calcium_hardness, TA means total_alkalinity, FCl/TCl/CCl mean free,
+  total and combined chlorine, PO4 is phosphate, B is borate, TCu/FCu/CCu are
+  the coppers, Fe is iron, Br is bromine, Temp is temperature.
+- "Total Alkalinity Adjusted" (aTA) is a DERIVED figure. Ignore it — it is
+  recomputed from the raw alkalinity. Only ever report the plain TA as
+  total_alkalinity.
 - A sheet often prints the reading, an ideal range, and a dose to add in
-  adjacent columns. Read the measured value only — never the target, the ideal
-  range, or the amount to add.
+  adjacent columns, and a TREATMENT section underneath naming quantities of
+  product. Read the measured value only. Never read a target, an ideal range,
+  or an amount to add — "add 2.03kg Pool Life Stab" is not a stabilizer
+  reading.
+- Handwriting is the owner's own annotation, not part of the report. Ignore it
+  entirely, however emphatically it is circled.
 - If a number is cut off, blurred, or you are guessing at a digit, leave the
   key out and say which row you could not read in "notes".
 - If the photo is not a water analysis at all, reply with an empty "values"
   object and say so in "notes".
-- confidence reflects the legibility of the sheet as a whole.`
+- confidence reflects the legibility of the sheet as a whole.
+
+LAYOUT. These reports commonly print four labelled blocks side by side —
+SANITIZER, BALANCE, PERFORMANCE, METALS — each followed by its own RESULT
+column. Every reading's number sits in the RESULT column immediately to the
+RIGHT of its own label. Read each block as its own two-column table. A value
+belonging to the block to the left or right is the single most common way to
+get this wrong, so check that each number you report is on the same line as,
+and just after, the label you are assigning it to. A photograph taken at an
+angle will make the columns look sheared; follow the printed rules and the
+line the label sits on, not the apparent vertical alignment.
+
+OTHER FIELDS.
+- "tested_at" is the date printed at the top, often with an ordinal suffix and
+  a weekday: "Wednesday, July 29th 2026" is 2026-07-29.
+- "company" is the store or contractor named on the sheet — the logo at the
+  top, or the "Store Name" line at the bottom.
+- "operator" and "test_count" are usually printed at the bottom left.
+- "wqi" is the water quality index: on these reports it is the small number in
+  the circle on the WQI gauge, and it is usually negative, between -1 and +1.
+  It is not a percentage and not the score out of 100.
+- "pool" describes the body of water, printed in the block at the top left:
+  customer, site address, water volume (in litres), type, treatment profile,
+  grade, surface, sanitizer and location. Copy them as printed and leave any
+  you cannot see as an empty string or null. This describes the pool, not the
+  test, and is used only to offer the owner an update — so never invent it.`
 
 // ReadTestSheet transcribes the readings from a photograph of a test sheet.
 //
@@ -190,4 +277,12 @@ func (r *SheetReading) normalise() {
 	r.Operator = trimTo(r.Operator, 120)
 	r.Notes = trimTo(r.Notes, 600)
 	r.Confidence = math.Min(1, math.Max(0, r.Confidence))
+
+	if r.TestCount != nil && (*r.TestCount < 0 || *r.TestCount > 100000) {
+		r.TestCount = nil
+	}
+	r.Pool.normalise()
+	if r.Pool.Empty() {
+		r.Pool = nil
+	}
 }

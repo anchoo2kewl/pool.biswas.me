@@ -101,7 +101,7 @@ photo endpoint answers `412`, and everything else works exactly as before.
 | `POOL_DEMO_RESET_HOURS` | `2` | How often the demo data is rebuilt |
 | `POOL_AI_BASE_URL` | NVIDIA NIM | Any OpenAI-compatible endpoint |
 | `POOL_AI_API_KEY` | — | Fallback key; users can set their own |
-| `POOL_AI_MODEL` | `deepseek-ai/deepseek-v4-pro` | Default model |
+| `POOL_AI_MODEL` | `meta/llama-3.2-90b-vision-instruct` | Default model. Vision-capable, because reading a photographed test sheet needs it |
 | `POOL_AI_VISION_MODEL` | — | Model for reading a photographed test sheet; falls back to `POOL_AI_MODEL` |
 | `AI_1_*` / `AIV_1_*` | — | A go-ai fallback chain for text and vision. Takes precedence over `POOL_AI_*` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enables Google sign-in |

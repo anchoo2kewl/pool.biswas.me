@@ -95,9 +95,13 @@ func Load() *Config {
 		GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),
 		OAuthStateSecret:   env("OAUTH_STATE_SECRET", ""),
 
-		AIBaseURL:     env("POOL_AI_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-		AIAPIKey:      env("POOL_AI_API_KEY", ""),
-		AIModel:       env("POOL_AI_MODEL", "deepseek-ai/deepseek-v4-pro"),
+		AIBaseURL: env("POOL_AI_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+		AIAPIKey:  env("POOL_AI_API_KEY", ""),
+		// A vision-capable default, because reading a photographed test sheet
+		// is a first-class feature here rather than an extra: a text-only
+		// model fails that at the provider. It is also the model 75hard runs,
+		// so one NIM key behaves identically across both.
+		AIModel:       env("POOL_AI_MODEL", "meta/llama-3.2-90b-vision-instruct"),
 		AIVisionModel: env("POOL_AI_VISION_MODEL", ""),
 
 		AdminEmail:    env("POOL_ADMIN_EMAIL", ""),

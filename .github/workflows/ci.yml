@@ -207,7 +207,7 @@ jobs:
           AIV_2_API_KEY=${DEEPSEEK_API_KEY}
           POOL_AI_API_KEY=${POOL_AI_API_KEY}
           POOL_AI_BASE_URL=https://integrate.api.nvidia.com/v1
-          POOL_AI_MODEL=deepseek-ai/deepseek-v4-pro
+          POOL_AI_MODEL=meta/llama-3.2-90b-vision-instruct
           OAUTH_STATE_SECRET=${OAUTH_STATE_SECRET}
           GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
           GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}

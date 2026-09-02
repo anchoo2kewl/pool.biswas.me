@@ -154,10 +154,11 @@ func (s *Server) testFromReading(u *store.User, pool *store.Pool, r *http.Reques
 	}
 
 	t := &store.Test{
-		PoolID:   pool.ID,
-		TestedAt: testedAt,
-		Source:   "photo",
-		Operator: trimTo(read.Operator, 120),
+		PoolID:    pool.ID,
+		TestedAt:  testedAt,
+		Source:    "photo",
+		Operator:  trimTo(read.Operator, 120),
+		TestCount: read.TestCount,
 	}
 	applyReading(t, read.Values)
 
