@@ -138,17 +138,35 @@ func Load() *Config {
 // does. POOL_AI_* stays supported as the single-endpoint shorthand this app
 // shipped with, and is what the settings page writes for a user's own key.
 func (c *Config) loadAISlots() {
-	c.AISlots = goai.SlotsFromEnv("AI")
+	c.AISlots = configured(goai.SlotsFromEnv("AI"))
 	if len(c.AISlots) == 0 && c.AIAPIKey != "" {
 		c.AISlots = []goai.Slot{Slot(c.AIBaseURL, c.AIAPIKey, c.AIModel)}
 	}
 
-	c.AIVisionSlots = goai.SlotsFromEnv("AIV")
+	c.AIVisionSlots = configured(goai.SlotsFromEnv("AIV"))
 	if len(c.AIVisionSlots) == 0 && c.AIVisionModel != "" && c.AIAPIKey != "" {
 		c.AIVisionSlots = []goai.Slot{Slot(c.AIBaseURL, c.AIAPIKey, c.AIVisionModel)}
 	}
 	// No vision slots is not a failure: the service falls back to the text
 	// chain, which on NVIDIA NIM and OpenRouter is usually multimodal anyway.
+}
+
+// configured drops slots that name a provider but carry nothing to call it
+// with — an AI_1_PROVIDER whose AI_1_API_KEY secret is not populated yet.
+//
+// The filter is what makes the fallback to POOL_AI_* mean "no chain is
+// configured" rather than "a chain was declared". Without it, a deploy
+// template that always writes AI_1_PROVIDER would switch the AI features off
+// entirely on any environment where the key is missing, while a perfectly good
+// POOL_AI_API_KEY sat unused beside it.
+func configured(slots []goai.Slot) []goai.Slot {
+	out := slots[:0]
+	for _, s := range slots {
+		if s.Configured() {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Slot describes one OpenAI-compatible endpoint to go-ai.

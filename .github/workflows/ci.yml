@@ -15,7 +15,15 @@
 #   DEPLOY_SSH_KEY      private key (PEM) authorised for that user
 #   POOL_ADMIN_EMAIL    seeds the first account on an empty database
 #   POOL_ADMIN_PASSWORD
-#   POOL_AI_API_KEY     LLM key used when a user has not set their own
+#   POOL_AI_API_KEY     LLM key used when a user has not set their own, and the
+#                       fallback when the chain below is not configured
+#   NVIDIA_API_KEY      primary AI provider (also serves vision)
+#   DEEPSEEK_API_KEY    backup AI provider
+#                       Both are the same secrets 75hard uses. Values cannot be
+#                       copied between repositories — GitHub returns them to
+#                       nobody, including this workflow's author — so set them
+#                       here too, or promote them to organisation secrets shared
+#                       by both repositories.
 #   OAUTH_STATE_SECRET  stable random string; OAuth breaks on restart without it
 #   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 #   GH_CLIENT_ID / GH_CLIENT_SECRET
@@ -44,9 +52,9 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.5'
           cache: true
@@ -73,29 +81,29 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # A pull request builds to verify the Dockerfile, but never pushes and
       # never touches the registry.
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=long
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
@@ -116,7 +124,7 @@ jobs:
       && github.ref == 'refs/heads/main'
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Deploy over SSH
         env:
@@ -126,6 +134,8 @@ jobs:
           POOL_ADMIN_EMAIL: ${{ secrets.POOL_ADMIN_EMAIL }}
           POOL_ADMIN_PASSWORD: ${{ secrets.POOL_ADMIN_PASSWORD }}
           POOL_AI_API_KEY: ${{ secrets.POOL_AI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           OAUTH_STATE_SECRET: ${{ secrets.OAUTH_STATE_SECRET }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
@@ -148,6 +158,29 @@ jobs:
           POOL_REGISTRATION=open
           POOL_ADMIN_EMAIL=${POOL_ADMIN_EMAIL}
           POOL_ADMIN_PASSWORD=${POOL_ADMIN_PASSWORD}
+          # The provider chain, matching 75hard: NVIDIA first, DeepSeek behind
+          # it, so a provider that is rate-limiting or down moves to the next
+          # one instead of failing the request. Reading a photographed test
+          # sheet needs vision, which is why AIV_* names models that have it.
+          #
+          # These win over POOL_AI_* below, which stays as the fallback for an
+          # environment where only the single key is set — including this one,
+          # until NVIDIA_API_KEY and DEEPSEEK_API_KEY exist as repository
+          # secrets. A slot whose key is empty is skipped rather than counted,
+          # so an unpopulated secret degrades to POOL_AI_* rather than turning
+          # the AI features off.
+          AI_1_PROVIDER=nvidia
+          AI_1_MODEL=meta/llama-3.2-90b-vision-instruct
+          AI_1_API_KEY=${NVIDIA_API_KEY}
+          AI_2_PROVIDER=deepseek
+          AI_2_MODEL=deepseek-v4-flash
+          AI_2_API_KEY=${DEEPSEEK_API_KEY}
+          AIV_1_PROVIDER=nvidia
+          AIV_1_MODEL=meta/llama-3.2-90b-vision-instruct
+          AIV_1_API_KEY=${NVIDIA_API_KEY}
+          AIV_2_PROVIDER=deepseek
+          AIV_2_MODEL=deepseek-v4-flash-vision-exp
+          AIV_2_API_KEY=${DEEPSEEK_API_KEY}
           POOL_AI_API_KEY=${POOL_AI_API_KEY}
           POOL_AI_BASE_URL=https://integrate.api.nvidia.com/v1
           POOL_AI_MODEL=deepseek-ai/deepseek-v4-pro
