@@ -149,7 +149,31 @@ jobs:
           mkdir -p ~/.ssh
           echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # ssh-keyscan is the first thing here that touches the network, and
+          # it used to run as `... 2>/dev/null` under `set -e`: a host that
+          # was briefly unreachable aborted the step with no output at all.
+          # A deploy that never started looked exactly like a deploy that
+          # broke, which is the worst way for CI to fail.
+          #
+          # So: retry it, require that it actually returned a key rather than
+          # trusting the exit status, and print what went wrong when it gives
+          # up. The host name is a secret and is masked in the log, so echoing
+          # it is safe.
+          for attempt in 1 2 3; do
+            if ssh-keyscan -T 10 -H "$DEPLOY_HOST" > /tmp/known_hosts.new 2>/tmp/keyscan.err \
+              && [ -s /tmp/known_hosts.new ]; then
+              cat /tmp/known_hosts.new >> ~/.ssh/known_hosts
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not reach $DEPLOY_HOST after 3 attempts — the deploy has not started, and nothing on the server has changed"
+              cat /tmp/keyscan.err >&2
+              exit 1
+            fi
+            echo "ssh-keyscan attempt $attempt failed, retrying in 5s" >&2
+            sleep 5
+          done
 
           # The env file is written on the server, not committed anywhere.
           cat > /tmp/pool.env <<EOF
