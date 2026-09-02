@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -56,33 +58,16 @@ func TestMalformedHashIsRejectedNotPanicking(t *testing.T) {
 	}
 }
 
-func TestAPIKeyShape(t *testing.T) {
-	key, prefix, hash := NewAPIKey()
-	if !strings.HasPrefix(key, APIKeyPrefix) {
-		t.Errorf("key %q does not start with %q", key, APIKeyPrefix)
+// Keys minted before go-api took over generation are still verified by hash,
+// so the hash has to stay a plain SHA-256 of the whole key string.
+func TestHashAPIKeyIsStableSHA256(t *testing.T) {
+	const key = APIKeyPrefix + "0123456789abcdef"
+	sum := sha256.Sum256([]byte(key))
+	if got, want := HashAPIKey(key), hex.EncodeToString(sum[:]); got != want {
+		t.Errorf("HashAPIKey = %q, want %q — keys issued before the switch would stop authenticating", got, want)
 	}
-	if !strings.HasPrefix(key, prefix) {
-		t.Errorf("prefix %q is not a prefix of key %q", prefix, key)
-	}
-	if len(prefix) >= len(key) {
-		t.Error("the displayed prefix is the whole key")
-	}
-	if hash == key {
+	if HashAPIKey(key) == key {
 		t.Error("the stored hash is the key itself")
-	}
-	if HashAPIKey(key) != hash {
-		t.Error("hashing the key does not reproduce the stored hash")
-	}
-}
-
-func TestAPIKeysAreUnique(t *testing.T) {
-	seen := map[string]bool{}
-	for i := 0; i < 200; i++ {
-		key, _, _ := NewAPIKey()
-		if seen[key] {
-			t.Fatal("NewAPIKey returned a duplicate")
-		}
-		seen[key] = true
 	}
 }
 

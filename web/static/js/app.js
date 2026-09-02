@@ -163,8 +163,11 @@ function renderOverview(root) {
         <div class="empty">
           <div class="big">🧪</div>
           <h3 style="margin-bottom:.5rem">No water tests yet</h3>
-          <p class="muted small">Add your first test — from a strip, a kit, or a printout from the pool store — and the dashboard fills in.</p>
-          <button class="btn btn-primary" onclick="window.__openTestForm()">Add a water test</button>
+          <p class="muted small">Add your first test — from a strip, a kit, or a printout from the pool store — and the dashboard fills in. Photograph the printout and the readings transcribe themselves.</p>
+          <div class="row" style="justify-content:center;gap:.5rem">
+            <button class="btn btn-primary" onclick="window.__openPhotoTestForm()">📷 Photograph a test sheet</button>
+            <button class="btn" onclick="window.__openTestForm()">Enter one by hand</button>
+          </div>
         </div>
       </div>`;
     return;
@@ -734,6 +737,7 @@ function renderTests(root) {
       <div class="row">
         <h3 style="margin:0">Water tests</h3>
         <div class="spacer"></div>
+        <button class="btn btn-sm" onclick="window.__openPhotoTestForm()">📷 From a photo</button>
         <button class="btn btn-sm btn-primary" onclick="window.__openTestForm()">Add test</button>
       </div>
     </div>
@@ -760,7 +764,10 @@ function renderTests(root) {
           </tr>`).join('')}
         </tbody></table></div>`
       : `<div class="empty"><div class="big">🧪</div><p class="muted">No tests recorded yet.</p>
-         <button class="btn btn-primary" onclick="window.__openTestForm()">Add a water test</button></div>`}
+         <div class="row" style="justify-content:center;gap:.5rem">
+           <button class="btn btn-primary" onclick="window.__openPhotoTestForm()">📷 Photograph a test sheet</button>
+           <button class="btn" onclick="window.__openTestForm()">Enter one by hand</button>
+         </div></div>`}
     </div>`;
 
   $$('[data-del-test]').forEach(b => b.addEventListener('click', async () => {
@@ -851,7 +858,7 @@ async function refreshKeys() {
       <div class="row" style="justify-content:space-between;padding:.5rem 0;border-bottom:1px solid rgba(255,255,255,.05)">
         <div style="min-width:0">
           <div class="small" style="font-weight:560">${escapeHtml(k.name)} ${k.revoked_at ? '<span class="pill pill-unknown"><span class="dot"></span>revoked</span>' : ''}</div>
-          <div class="small dim mono">${escapeHtml(k.prefix)}… · ${k.last_used_at ? `last used ${fmt.date(k.last_used_at)}` : 'never used'}</div>
+          <div class="small dim mono">${escapeHtml(k.prefix)}… · ${escapeHtml(k.scopes || 'read')} · ${k.last_used_at ? `last used ${fmt.date(k.last_used_at)}` : 'never used'}</div>
         </div>
         ${k.revoked_at ? '' : `<button class="btn btn-sm btn-ghost btn-danger" data-revoke="${k.id}">Revoke</button>`}
       </div>`).join('') : '<div class="empty small">No API keys yet.</div>';
@@ -1009,6 +1016,135 @@ function openTestForm() {
   });
 }
 
+/* ── Add a test from a photograph ─────────────────────────────────────
+ *
+ * The whole printout — twenty readings, the date, who tested it — becomes a
+ * scored test without anyone typing a number. The model transcribes, the
+ * server scores and doses it exactly as it would a typed one, and the analysis
+ * runs in the same request.
+ */
+function openPhotoTestForm() {
+  modal('Add a test from a photo', `
+    <div class="stack" style="gap:.85rem" id="photo-step-1">
+      <p class="small muted" style="margin:0">Photograph the printout from the pool store. The readings are
+        transcribed, scored against this pool, and analysed — you can correct anything afterwards.</p>
+      <div class="field">
+        <label for="p-file">Photo of the test sheet</label>
+        <input id="p-file" type="file" accept="image/*" capture="environment">
+        <span class="hint">Images only, up to 25 MB. Held straight and in focus reads best.</span>
+      </div>
+      <div id="p-preview"></div>
+      <div class="grid grid-2" style="gap:.75rem">
+        <div class="field"><label for="p-date">Date tested</label>
+          <input id="p-date" type="date">
+          <span class="hint">Leave blank to use the date on the sheet</span></div>
+        <div class="field"><label for="p-company">Tested by</label>
+          <input id="p-company" placeholder="Read from the sheet"></div>
+      </div>
+      <div class="field"><label for="p-hint">Anything the photo does not say (optional)</label>
+        <input id="p-hint" placeholder="The salt row is smudged"></div>
+      <label class="small" style="display:flex;align-items:center;gap:.5rem">
+        <input id="p-analyse" type="checkbox" checked> Run the AI analysis straight away
+      </label>
+      <button class="btn btn-primary btn-block" id="p-go">Read the sheet</button>
+    </div>`, (body, close) => {
+    const fileInput = $('#p-file', body);
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      const preview = $('#p-preview', body);
+      if (!file) { preview.innerHTML = ''; return; }
+      const url = URL.createObjectURL(file);
+      preview.innerHTML = `<img src="${url}" alt="The sheet you are about to upload"
+        style="width:100%;max-height:260px;object-fit:contain;border-radius:10px;border:1px solid var(--glass-border)">`;
+      preview.firstElementChild.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+    });
+
+    $('#p-go', body).addEventListener('click', async () => {
+      const file = fileInput.files[0];
+      if (!file) return toast('Choose a photo first', 'err');
+
+      const btn = $('#p-go', body);
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Reading the sheet…';
+
+      const form = new FormData();
+      form.append('file', file);
+      form.append('pool_id', state.pool.id);
+      form.append('analyse', $('#p-analyse', body).checked ? 'true' : 'false');
+      const date = $('#p-date', body).value;
+      if (date) form.append('tested_at', date);
+      const company = $('#p-company', body).value.trim();
+      if (company) form.append('company_name', company);
+      const hint = $('#p-hint', body).value.trim();
+      if (hint) form.append('hint', hint);
+
+      try {
+        const detail = await api.createTestFromPhoto(form);
+        renderPhotoResult(body, detail, close);
+        state.tests = []; state.trends = null;
+        loadPool();
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false;
+        btn.textContent = 'Read the sheet';
+      }
+    });
+  });
+}
+
+/* What was read, what was not, and what the analysis made of it. Everything
+ * here is already stored — this is a receipt, not a confirmation step. */
+function renderPhotoResult(body, detail, close) {
+  const parsed = detail.parsed || {};
+  const readings = (detail.readings || []).filter(r => r.value !== null && r.value !== undefined);
+  const insight = detail.insight;
+  const confidence = Math.round((parsed.confidence || 0) * 100);
+
+  body.innerHTML = `
+    <div class="stack" style="gap:.85rem">
+      <div class="row" style="align-items:baseline">
+        <h3 style="margin:0">Read ${readings.length} reading${readings.length === 1 ? '' : 's'}</h3>
+        <div class="spacer"></div>
+        <span class="small dim">${escapeHtml(parsed.model || '')}${confidence ? ` · ${confidence}% confident` : ''}</span>
+      </div>
+
+      ${readings.length ? `<div class="grid grid-2" style="gap:.5rem">
+        ${readings.map(r => `
+          <div class="row small" style="gap:.5rem;padding:.35rem .6rem;border-radius:8px;background:rgba(255,255,255,.03)">
+            <span>${escapeHtml(r.label)}</span><div class="spacer"></div>
+            <span class="mono">${fmt.num(r.value)}</span>
+            <span class="dim">${escapeHtml(r.unit || '')}</span>
+            <span class="pill pill-${r.status}"><span class="dot"></span></span>
+          </div>`).join('')}
+      </div>` : ''}
+
+      ${parsed.notes ? `<p class="small muted" style="margin:0">${escapeHtml(parsed.notes)}</p>` : ''}
+
+      ${(parsed.rejected || []).length ? `<div class="glass card" style="padding:.75rem">
+        <p class="small" style="margin:0"><strong>Discarded as impossible:</strong>
+          <span class="mono">${parsed.rejected.map(escapeHtml).join(', ')}</span>.
+          A misread digit cannot be corrected safely, so these were thrown away — check them against
+          the sheet and enter them by hand if they are real.</p>
+      </div>` : ''}
+
+      ${detail.insight_error ? `<p class="small" style="margin:0;color:var(--warning)">
+        The test was saved, but the analysis failed: ${escapeHtml(detail.insight_error)}. You can run it
+        again from the test.</p>` : ''}
+
+      ${insight ? `<div class="note ai">
+        ${insight.headline ? `<strong>${escapeHtml(insight.headline)}</strong>` : ''}
+        ${insight.summary ? `<p class="small" style="margin:.4rem 0 0">${escapeHtml(insight.summary)}</p>` : ''}
+        ${(insight.actions || []).length ? `<p class="small" style="margin:.5rem 0 0"><strong>Do now:</strong>
+          ${escapeHtml(insight.actions[0])}</p>` : ''}
+      </div>` : ''}
+
+      <button class="btn btn-primary btn-block" id="p-done">Open the test</button>
+    </div>`;
+
+  $('#p-done', body).addEventListener('click', () => { close(); switchView('overview'); });
+}
+
 const CATEGORIES = ['chemical', 'equipment', 'service', 'maintenance', 'utility', 'opening', 'closing', 'other'];
 const UNITS = ['', 'L', 'ml', 'kg', 'g', 'bag', 'jug', 'puck', 'tablet', 'each', 'hour'];
 
@@ -1149,20 +1285,38 @@ function openKeyForm() {
     <div class="stack" style="gap:.85rem">
       <div class="field"><label for="k-name">What is it for?</label>
         <input id="k-name" placeholder="Home automation script"></div>
+      <div class="field"><label for="k-scopes">What may it do?</label>
+        <select id="k-scopes">
+          <option value="read,write">Read and write — everything you can do</option>
+          <option value="read">Read only — cannot change anything</option>
+        </select>
+        <span class="hint">Enforced on the request method: a read key cannot POST, PATCH or DELETE.</span></div>
       <button class="btn btn-primary btn-block" id="do-key">Create key</button>
       <div id="key-result"></div>
     </div>`, (body) => {
     $('#do-key', body).addEventListener('click', async () => {
       try {
-        const k = await api.createKey({ name: $('#k-name', body).value.trim() || 'API key' });
+        const res = await api.createKey({
+          name: $('#k-name', body).value.trim() || 'API key',
+          scopes: $('#k-scopes', body).value,
+        });
+        const secret = res.key.key;
+        const discovery = res.discovery || {};
         $('#key-result', body).innerHTML = `
           <div class="note" style="border-left-color:var(--warning)">
             <div class="note-head"><strong>Copy this now — it is shown only once.</strong></div>
-            <pre style="margin:0;white-space:pre-wrap;word-break:break-all">${escapeHtml(k.key)}</pre>
+            <pre style="margin:0;white-space:pre-wrap;word-break:break-all">${escapeHtml(secret)}</pre>
             <button class="btn btn-sm" style="margin-top:.6rem" id="copy-key">Copy</button>
-          </div>`;
+          </div>
+          ${discovery.example ? `<div class="note" style="margin-top:.6rem">
+            <div class="note-head"><strong>Try it</strong></div>
+            <pre style="margin:0;white-space:pre-wrap;word-break:break-all">${escapeHtml(discovery.example)}</pre>
+            <p class="small dim" style="margin:.6rem 0 0">The full API description is at
+              <a href="${escapeHtml(discovery.spec_url || '/api/openapi.yaml')}">${escapeHtml(discovery.spec_url || '/api/openapi.yaml')}</a>
+              — hand it and this key to a script or an LLM and it can work the rest out.</p>
+          </div>` : ''}`;
         $('#copy-key', body).addEventListener('click', () => {
-          navigator.clipboard.writeText(k.key).then(() => toast('Copied', 'ok'));
+          navigator.clipboard.writeText(secret).then(() => toast('Copied', 'ok'));
         });
         $('#do-key', body).disabled = true;
         refreshKeys();
@@ -1205,6 +1359,7 @@ function showDemoBanner() {
 
 /* Inline handlers in generated markup need these on the window. */
 window.__openTestForm = openTestForm;
+window.__openPhotoTestForm = openPhotoTestForm;
 window.__openLogForm = openLogForm;
 window.__switchView = switchView;
 

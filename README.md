@@ -30,14 +30,29 @@ themselves into whichever season contains their date. Spend rolls up by season,
 month, category, item and vendor, with a running total and season-over-season
 comparison.
 
-**AI analysis.** Optional. Any OpenAI-compatible endpoint (NVIDIA NIM,
-OpenRouter, OpenAI, a local model). It reads the test history *and* the logbook,
-so it explains why a number moved rather than restating it — connecting a
-chlorine crash to the stabilizer that washed out, or repeated salt purchases to a
-suspected leak.
+**A test from a photograph.** Photograph the printout the pool store hands over
+and the whole of it — twenty readings, the date, who tested it — becomes a
+scored test with a dosing plan, without typing a number. The photo is filed
+against the test, so the readings can always be checked against the paper they
+came from, and the analysis runs in the same request.
 
-**An API for everything.** Every action in the interface is an API call. See
-`/docs` on a running instance.
+Readings that are physically impossible for pool water — a pH of 73, a negative
+hardness — are discarded rather than corrected: there is no way to know which
+digit was misread, and a wrong number here becomes a dose recommendation.
+Whatever the model could not read is filed as a note, so a blank row still has
+an explanation months later.
+
+**AI analysis.** Optional. Any OpenAI-compatible endpoint (NVIDIA NIM,
+OpenRouter, OpenAI, a local model), with a fallback chain: a provider that is
+rate-limiting or down moves to the next one. It reads the test history *and* the
+logbook, so it explains why a number moved rather than restating it —
+connecting a chlorine crash to the stabilizer that washed out, or repeated salt
+purchases to a suspected leak.
+
+**An API for everything.** Every action in the interface is an API call, with a
+personal key carrying a `read` or `read,write` scope that is enforced on the
+method. The OpenAPI document is served at `/api/openapi.yaml`; see `/docs` on a
+running instance.
 
 ## Demo
 
@@ -68,6 +83,9 @@ go run ./cmd/server      # http://localhost:8080
 go test ./...
 ```
 
+Reading a test sheet needs a vision-capable model. Without one configured the
+photo endpoint answers `412`, and everything else works exactly as before.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -84,6 +102,8 @@ go test ./...
 | `POOL_AI_BASE_URL` | NVIDIA NIM | Any OpenAI-compatible endpoint |
 | `POOL_AI_API_KEY` | — | Fallback key; users can set their own |
 | `POOL_AI_MODEL` | `deepseek-ai/deepseek-v4-pro` | Default model |
+| `POOL_AI_VISION_MODEL` | — | Model for reading a photographed test sheet; falls back to `POOL_AI_MODEL` |
+| `AI_1_*` / `AIV_1_*` | — | A go-ai fallback chain for text and vision. Takes precedence over `POOL_AI_*` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enables Google sign-in |
 | `GH_CLIENT_ID` / `GH_CLIENT_SECRET` | — | Enables GitHub sign-in |
 | `OAUTH_STATE_SECRET` | random | Set a stable value, or sign-ins break across restarts |
@@ -99,6 +119,14 @@ redirect URIs on one client.
 ## How it is built
 
 - **Go 1.26.5**, standard library HTTP routing, no web framework.
+- **Four shared libraries**, the same ones behind the other apps here:
+  [`go-ai`](https://github.com/anchoo2kewl/go-ai) for provider-agnostic model
+  calls with an ordered fallback chain,
+  [`go-api`](https://github.com/anchoo2kewl/go-api) for personal API tokens and
+  OpenAPI discovery, and
+  [`go-photo`](https://github.com/anchoo2kewl/go-photo) for image ingest —
+  sniffing, downscaling, re-encoding and storing an upload where a crafted
+  filename cannot reach.
 - **[Turso](https://github.com/tursodatabase/turso)** embedded via
   [`turso-go`](https://github.com/tursodatabase/turso-go), which loads a Rust
   engine through `purego` — so there is no CGO, no database server, and no

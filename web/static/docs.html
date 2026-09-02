@@ -55,6 +55,18 @@
       exactly like a real one.</p>
     <p>An <code>X-API-Key</code> header works too. Session cookies authenticate the same endpoints from the browser,
        so there is no separate API surface to keep in sync.</p>
+    <p>A key carries a <code>read</code> or <code>read,write</code> scope, enforced on the HTTP method: a read key
+       cannot POST, PATCH or DELETE, and gets a <code>403</code> if it tries. A key cannot issue another key.</p>
+  </section>
+
+  <section class="glass card">
+    <h2>Machine-readable</h2>
+    <p>The full OpenAPI 3.1 document lives at
+      <a href="/api/openapi.yaml"><code>/api/openapi.yaml</code></a>. It is public and needs no credential —
+      requiring one to discover how to present one is a loop.</p>
+    <pre>curl -s https://pool.biswas.me/api/openapi.yaml -o pool.yaml</pre>
+    <p>Hand it and a key to an LLM or a client generator and it can work out the calls unaided. Creating a key
+       returns the document's location and a <code>curl</code> that works as printed, alongside the secret.</p>
   </section>
 
   <section class="glass card">
@@ -119,6 +131,7 @@ curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
     <h3>Water tests</h3>
     <div class="ep"><span class="verb get">GET</span><span>/api/tests?pool_id=&amp;from=&amp;to=&amp;limit=</span></div>
     <div class="ep"><span class="verb post">POST</span><span>/api/tests</span><span class="desc">returns readings, alerts and doses</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/tests/from-photo</span><span class="desc">multipart; transcribes a photographed sheet, then analyses it</span></div>
     <div class="ep"><span class="verb get">GET</span><span>/api/tests/{id}</span><span class="desc">full detail with treatments and notes</span></div>
     <div class="ep"><span class="verb patch">PATCH</span><span>/api/tests/{id}</span></div>
     <div class="ep"><span class="verb delete">DELETE</span><span>/api/tests/{id}</span></div>
@@ -154,6 +167,28 @@ curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
   </section>
 
   <section class="glass card">
+    <h2>A test from a photograph</h2>
+    <p>Photograph the printout the pool store hands over and the whole of it — twenty readings, the date, who
+       tested it — becomes a scored test with a dosing plan, without anyone typing a number.</p>
+    <pre>curl -sX POST $BASE/tests/from-photo \
+  -H "Authorization: Bearer $KEY" \
+  -F "file=@sheet.jpg" \
+  -F "pool_id=1" \
+  -F "hint=the salt row is smudged"</pre>
+    <p>The response is the usual test detail — readings, warnings, doses — plus <code>parsed</code>, which reports
+       what was read off the paper, and <code>insight</code>, the analysis, which runs in the same request unless you
+       send <code>analyse=false</code>.</p>
+    <p>Nothing is written until the photo has been read, so an unreadable picture leaves no empty test behind. A
+       date you supply beats the one printed on the sheet. The photo is filed against the test it produced, so the
+       readings can always be checked against the paper they came from.</p>
+    <p>Readings that are physically impossible for pool water — a pH of 73, a negative hardness — are discarded
+       rather than corrected, and listed in <code>parsed.rejected</code>: there is no way to know which digit was
+       misread, and a wrong number here becomes a dose recommendation. Whatever the model could not read is filed as
+       a note on the test, so a blank row still has an explanation months later.</p>
+    <p>Requires an AI provider — the server's, or your own key from <code>PUT /api/me/ai</code>.</p>
+  </section>
+
+  <section class="glass card">
     <h2>Uploading a receipt</h2>
     <pre>curl -sX POST $BASE/attachments \
   -H "Authorization: Bearer $KEY" \
@@ -180,7 +215,8 @@ curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
        index and the 0–100 score are always computed server-side.</p>
     <h3>Errors</h3>
     <p>Failures return the matching HTTP status with <code>{"error": "..."}</code>. A revoked or expired key returns
-       <code>401</code>.</p>
+       <code>401</code>; a key whose scope does not cover the request returns <code>403</code>. An upload over 25 MB
+       returns <code>413</code>, and a photo nothing could be read from returns <code>422</code>.</p>
   </section>
 
   <footer class="row" style="padding:2rem 0;border-top:1px solid var(--glass-border);color:var(--fg-dim);font-size:.84rem">

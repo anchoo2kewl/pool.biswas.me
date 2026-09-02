@@ -1,0 +1,1184 @@
+openapi: 3.1.0
+
+info:
+  title: pool.biswas.me
+  version: "1.0"
+  summary: Pool water chemistry, treatment planning and cost-of-ownership tracking.
+  description: |
+    Every action the web interface performs is one of these calls — there is no
+    separate API surface to keep in sync.
+
+    **Authentication.** Send a personal API key as `Authorization: Bearer
+    pool_sk_…`, or as `X-API-Key`. Create one under Settings → API keys in the
+    app; the plaintext is shown once and cannot be recovered. A key carries a
+    `read` or `read,write` scope, enforced on the HTTP method: a read key
+    cannot POST, PATCH or DELETE. Browser sessions authenticate the same
+    endpoints with a cookie.
+
+    **Chemistry.** Readings are stored as given. Combined chlorine, adjusted
+    alkalinity, the Langelier saturation index and the 0–100 water quality
+    score are computed server-side from the pool's volume, surface and
+    sanitizer, so a test posted through the API is scored identically to one
+    typed into the app.
+
+    **Money** is stored in minor units. Endpoints that accept a cost take
+    either `cost` in dollars or `cost_cents` as an integer; the integer wins if
+    both are sent.
+  license:
+    name: MIT
+
+servers:
+  - url: https://pool.biswas.me
+    description: Production
+  - url: http://localhost:8080
+    description: A local instance
+
+security:
+  - bearerAuth: []
+  - apiKeyHeader: []
+
+tags:
+  - name: Pools
+  - name: Water tests
+  - name: AI
+  - name: Logbook
+  - name: Seasons
+  - name: Attachments
+  - name: Analytics
+  - name: Account
+
+paths:
+  /healthz:
+    get:
+      tags: [Account]
+      summary: Liveness and database reachability
+      security: []
+      responses:
+        "200":
+          description: The process is up and the database answered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, examples: [ok] }
+        "503": { description: The database is unavailable. }
+
+  /api/config:
+    get:
+      tags: [Account]
+      summary: Public client configuration
+      description: Which sign-in providers are enabled, and whether the demo account is served.
+      security: []
+      responses:
+        "200":
+          description: Configuration for the sign-in page.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /api/me:
+    get:
+      tags: [Account]
+      summary: The authenticated account
+      responses:
+        "200":
+          description: The account, its sign-in providers, and its AI configuration.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  providers: { type: object, additionalProperties: true }
+                  ai:
+                    type: object
+                    properties:
+                      configured: { type: boolean }
+                      using_own_key: { type: boolean }
+                      model: { type: string }
+                      base_url: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Account]
+      summary: Change your name or password
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                password: { type: string, minLength: 8 }
+      responses:
+        "200":
+          description: The updated account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/me/ai:
+    put:
+      tags: [Account, AI]
+      summary: Set your own LLM credentials
+      description: |
+        Your own key, endpoint and model, used in place of the server's so
+        usage is billed to you. Any OpenAI-compatible endpoint works. Send an
+        empty `api_key` to go back to the server's.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                api_key: { type: string }
+                base_url: { type: string, examples: ["https://integrate.api.nvidia.com/v1"] }
+                model: { type: string, examples: ["deepseek-ai/deepseek-v4-pro"] }
+      responses:
+        "200": { description: Saved. }
+
+  /api/keys:
+    get:
+      tags: [Account]
+      summary: List your API keys
+      description: Secrets are never returned; a key is identified by its prefix.
+      responses:
+        "200":
+          description: Your keys, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/APIKey" }
+    post:
+      tags: [Account]
+      summary: Issue an API key
+      description: |
+        The plaintext key is in this response and nowhere else, ever again.
+        The response also carries the OpenAPI document's location and a `curl`
+        that works as printed.
+
+        A key cannot issue another key: that would let a read credential
+        quietly escalate itself into a write one. Sign in to create one.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 80, examples: ["Home Assistant"] }
+                scopes:
+                  description: "`read`, or `read,write`. Anything unrecognised normalises to read."
+                  oneOf:
+                    - type: string
+                      examples: ["read,write"]
+                    - type: array
+                      items: { type: string, enum: [read, write] }
+                expires_at:
+                  type: string
+                  description: RFC3339. Omit for a key that never expires.
+      responses:
+        "201":
+          description: The key, shown once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    allOf:
+                      - $ref: "#/components/schemas/APIKey"
+                      - type: object
+                        properties:
+                          key:
+                            type: string
+                            description: The plaintext. Store it now.
+                            examples: ["pool_sk_9f3c1a20…"]
+                  discovery:
+                    type: object
+                    properties:
+                      base_url: { type: string }
+                      spec_url: { type: string }
+                      auth_scheme: { type: string, examples: [Bearer] }
+                      example: { type: string }
+                      scopes: { type: array, items: { type: string } }
+        "403": { description: An API key cannot issue another key. }
+
+  /api/keys/{id}:
+    delete:
+      tags: [Account]
+      summary: Revoke an API key
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Revoked. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/pools:
+    get:
+      tags: [Pools]
+      summary: List your pools
+      responses:
+        "200":
+          description: Every pool on the account.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Pool" }
+    post:
+      tags: [Pools]
+      summary: Create a pool
+      description: |
+        `volume_l` drives every dose calculation, and `surface` and `sanitizer`
+        decide which ideal ranges a reading is scored against — a vinyl salt
+        pool and a plaster chlorine pool are graded differently.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PoolInput" }
+      responses:
+        "201":
+          description: The created pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pool" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: A pool of that name already exists. }
+
+  /api/pools/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Pools]
+      summary: Fetch a pool
+      responses:
+        "200":
+          description: The pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pool" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Pools]
+      summary: Update a pool
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PoolInput" }
+      responses:
+        "200":
+          description: The updated pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pool" }
+    delete:
+      tags: [Pools]
+      summary: Delete a pool
+      description: Takes its tests, logbook entries, seasons and attachments with it.
+      responses:
+        "200": { description: Deleted. }
+
+  /api/companies:
+    get:
+      tags: [Pools]
+      summary: List testing companies and contractors
+      responses:
+        "200":
+          description: Companies on the account.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Company" }
+    post:
+      tags: [Pools]
+      summary: Create a company
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                kind: { type: string, examples: [store, contractor, self] }
+                phone: { type: string }
+                email: { type: string }
+                address: { type: string }
+                notes: { type: string }
+      responses:
+        "201":
+          description: The created company.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Company" }
+
+  /api/companies/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Pools]
+      summary: Update a company
+      responses:
+        "200": { description: The updated company. }
+    delete:
+      tags: [Pools]
+      summary: Delete a company
+      responses:
+        "200": { description: Deleted. }
+
+  /api/tests:
+    get:
+      tags: [Water tests]
+      summary: List water tests
+      parameters:
+        - { name: pool_id, in: query, schema: { type: integer } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Tests, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Test" }
+    post:
+      tags: [Water tests]
+      summary: Record a water test
+      description: |
+        Every reading is optional — a strip test with three numbers still
+        produces a full analysis. The response is the same detail document
+        `GET /api/tests/{id}` returns: the readings scored against this pool's
+        ideal ranges, cross-parameter warnings, and a dosing plan ordered so it
+        is safe to apply in sequence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TestInput" }
+      responses:
+        "201":
+          description: The stored test, with its computed chemistry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TestDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/tests/from-photo:
+    post:
+      tags: [Water tests, AI]
+      summary: Create a test from a photograph of a test sheet
+      description: |
+        Upload a photo of a printed water analysis. A vision model transcribes
+        the readings, they are stored as an ordinary test — same derivation,
+        same dosing plan — the photo is filed against it, and the AI analysis
+        runs in the same request.
+
+        Nothing is written until the photo has been read, so an unreadable
+        picture leaves no empty test behind. Readings that are physically
+        impossible for pool water are discarded rather than corrected, and
+        listed in `parsed.rejected`, because there is no way to know which
+        digit was misread. Anything the model could not read is recorded as a
+        note on the test.
+
+        A date you supply beats the one printed on the sheet. Requires an AI
+        provider — the server's, or your own key from `PUT /api/me/ai`.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, pool_id]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: A photo of the sheet. Images only; 25 MB limit.
+                pool_id: { type: integer }
+                tested_at:
+                  type: string
+                  description: Overrides the date printed on the sheet.
+                company_name:
+                  type: string
+                  description: Overrides the company printed on the sheet. Created if unknown.
+                hint:
+                  type: string
+                  description: Anything worth telling the model — "the salt row is smudged".
+                notes: { type: string, description: Filed as a note on the test. }
+                analyse:
+                  type: string
+                  description: Send `false` to store the test without running the analysis.
+                  examples: ["false"]
+      responses:
+        "201":
+          description: The stored test, what was read off the sheet, and the analysis.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/TestDetail"
+                  - type: object
+                    properties:
+                      parsed: { $ref: "#/components/schemas/SheetReading" }
+                      attachment: { $ref: "#/components/schemas/Attachment" }
+                      insight: { $ref: "#/components/schemas/Insight" }
+                      note: { $ref: "#/components/schemas/Note" }
+                      insight_error:
+                        type: string
+                        description: Present when the test was stored but the analysis failed.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "412": { description: No AI provider is configured. }
+        "422": { description: Nothing legible could be read from the photo. }
+        "413": { $ref: "#/components/responses/TooLarge" }
+
+  /api/tests/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get:
+      tags: [Water tests]
+      summary: Fetch a test in full
+      description: Readings, warnings, the dosing plan, notes and attached sheets.
+      responses:
+        "200":
+          description: The test detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TestDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Water tests]
+      summary: Correct a test
+      description: Everything derived from the readings is recomputed, including the doses.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TestInput" }
+      responses:
+        "200":
+          description: The updated test detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TestDetail" }
+    delete:
+      tags: [Water tests]
+      summary: Delete a test
+      responses:
+        "200": { description: Deleted. }
+
+  /api/tests/{id}/insight:
+    post:
+      tags: [AI]
+      summary: Analyse a test
+      description: |
+        Reads the test, the computed chemistry, the recent history *and* the
+        logbook, so the analysis can explain why a number moved rather than
+        restate it — connecting a chlorine crash to the stabilizer that washed
+        out, or repeated salt purchases to a suspected leak. The result is
+        stored as an AI note on the test.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "201":
+          description: The analysis, and the note it was filed as.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  note: { $ref: "#/components/schemas/Note" }
+                  insight: { $ref: "#/components/schemas/Insight" }
+        "412": { description: No AI provider is configured. }
+        "502": { description: The model could not be reached. }
+
+  /api/treatments/{id}/applied:
+    post:
+      tags: [Water tests]
+      summary: Mark a dose as applied
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                applied: { type: boolean }
+      responses:
+        "200": { description: The updated treatment. }
+
+  /api/notes:
+    get:
+      tags: [Water tests]
+      summary: List notes
+      parameters:
+        - { name: pool_id, in: query, required: true, schema: { type: integer } }
+        - { name: test_id, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Notes, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Note" }
+    post:
+      tags: [Water tests]
+      summary: Add a note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pool_id, body]
+              properties:
+                pool_id: { type: integer }
+                test_id: { type: integer }
+                body: { type: string }
+      responses:
+        "201":
+          description: The created note.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Note" }
+
+  /api/notes/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Water tests]
+      summary: Edit a note
+      responses:
+        "200": { description: The updated note. }
+    delete:
+      tags: [Water tests]
+      summary: Delete a note
+      parameters:
+        - { name: pool_id, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: Deleted. }
+
+  /api/log:
+    get:
+      tags: [Logbook]
+      summary: List logbook entries
+      parameters:
+        - { name: pool_id, in: query, schema: { type: integer } }
+        - { name: season_id, in: query, schema: { type: integer } }
+        - { name: category, in: query, schema: { $ref: "#/components/schemas/Category" } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Entries, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LogEntry" }
+    post:
+      tags: [Logbook]
+      summary: Log something that went into or onto the pool
+      description: |
+        Backdating is the normal path, not an exception: an entry files itself
+        into whichever season contains `occurred_on`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogEntryInput" }
+      responses:
+        "201":
+          description: The created entry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogEntry" }
+
+  /api/log/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Logbook]
+      summary: Update a logbook entry
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogEntryInput" }
+      responses:
+        "200": { description: The updated entry. }
+    delete:
+      tags: [Logbook]
+      summary: Delete a logbook entry
+      responses:
+        "200": { description: Deleted. }
+
+  /api/seasons:
+    get:
+      tags: [Seasons]
+      summary: List seasons
+      parameters:
+        - { name: pool_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Seasons, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Season" }
+    post:
+      tags: [Seasons]
+      summary: Open a season
+      description: Existing entries whose date falls inside it are re-filed automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pool_id, name, opened_on]
+              properties:
+                pool_id: { type: integer }
+                name: { type: string, examples: ["2026"] }
+                opened_on: { type: string, format: date }
+                closed_on: { type: string, format: date }
+                notes: { type: string }
+      responses:
+        "201":
+          description: The created season.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Season" }
+
+  /api/seasons/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Seasons]
+      summary: Update a season
+      responses:
+        "200": { description: The updated season. }
+    delete:
+      tags: [Seasons]
+      summary: Delete a season
+      parameters:
+        - { name: pool_id, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: Deleted. }
+
+  /api/attachments:
+    get:
+      tags: [Attachments]
+      summary: List attachments
+      parameters:
+        - { name: pool_id, in: query, schema: { type: integer } }
+        - { name: kind, in: query, schema: { type: string, enum: [receipt, test_sheet] } }
+        - { name: test_id, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Attachments, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Attachment" }
+    post:
+      tags: [Attachments]
+      summary: Upload a receipt or a test sheet
+      description: |
+        Images are downscaled to 1600px on the long edge and re-encoded, so a
+        12 MB phone photo typically lands under 300 KB; the response reports
+        both sizes. A file that is not a decodable image — a PDF invoice — is
+        stored as uploaded rather than refused. The limit is 25 MB.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, pool_id]
+              properties:
+                file: { type: string, format: binary }
+                pool_id: { type: integer }
+                kind: { type: string, enum: [receipt, test_sheet], default: receipt }
+                test_id: { type: integer, description: File it against a test. }
+                log_entry_id: { type: integer, description: Link it to a logbook entry. }
+                total: { type: number, description: Dollars. }
+                total_cents: { type: integer }
+                currency: { type: string, default: CAD }
+                vendor: { type: string }
+                purchased_on: { type: string, format: date }
+                notes: { type: string }
+      responses:
+        "201":
+          description: The stored attachment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attachment" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+
+  /api/attachments/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Attachments]
+      summary: Update an attachment's metadata
+      responses:
+        "200": { description: The updated attachment. }
+    delete:
+      tags: [Attachments]
+      summary: Delete an attachment
+      description: |
+        The file behind it is removed only once no other record references the
+        same bytes — attachments are stored under a content hash, so identical
+        uploads share one file.
+      responses:
+        "200": { description: Deleted. }
+
+  /api/attachments/{id}/file:
+    get:
+      tags: [Attachments]
+      summary: Download the file
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - name: download
+          in: query
+          description: Any value sets a Content-Disposition attachment header.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404": { description: The row exists but the file is no longer on disk. }
+
+  /api/attachments/{id}/link:
+    post:
+      tags: [Attachments]
+      summary: Link an attachment to a logbook entry
+      description: |
+        A receipt can cover several line items and a line item can be split
+        across receipts, so the link is many-to-many.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [log_entry_id]
+              properties:
+                log_entry_id: { type: integer }
+                unlink: { type: boolean, default: false }
+      responses:
+        "200": { description: Linked. }
+
+  /api/analytics/summary:
+    get:
+      tags: [Analytics]
+      summary: Dashboard headline
+      parameters:
+        - { name: pool_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Latest test, score, spend to date and outstanding treatments.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /api/analytics/costs:
+    get:
+      tags: [Analytics]
+      summary: Spending, rolled up
+      description: By category, month, item and vendor, with a running total and a season-over-season comparison.
+      parameters:
+        - { name: pool_id, in: query, required: true, schema: { type: integer } }
+        - { name: season_id, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Cost breakdowns.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /api/analytics/trends:
+    get:
+      tags: [Analytics]
+      summary: Reading series with ideal bands
+      description: Each parameter over time, its ideal band for this pool, and the logbook events to read alongside it.
+      parameters:
+        - { name: pool_id, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Series and events.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "`Authorization: Bearer pool_sk_…`"
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    Unauthorized:
+      description: No credential, or one that is unknown, revoked or expired.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: The credential is valid but its scope does not permit this request.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: No such record on this account.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: The request could not be understood or is missing something required.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: The upload is over the 25 MB limit.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { type: string }
+        ai_base_url: { type: string }
+        ai_model: { type: string }
+        has_ai_key: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: string }
+
+    APIKey:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        prefix:
+          type: string
+          description: The identifying, non-secret leading portion.
+          examples: ["pool_sk_9f3c1a20"]
+        scopes: { type: string, examples: ["read,write"] }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string }
+        expires_at: { type: string }
+        revoked_at: { type: string }
+
+    PoolInput:
+      type: object
+      required: [name, volume_l]
+      properties:
+        name: { type: string }
+        volume_l: { type: number, description: Litres. Drives every dose. }
+        customer_name: { type: string }
+        site_address: { type: string }
+        water_type: { type: string, default: Swimming Pool }
+        treatment_profile: { type: string }
+        grade: { type: string }
+        surface: { type: string, enum: [vinyl, plaster, fibreglass, concrete, painted], default: vinyl }
+        sanitizer: { type: string, enum: [chlorine, salt, bromine, mineral], default: chlorine }
+        location: { type: string, enum: [Outdoor, Indoor], default: Outdoor }
+        salt_pool: { type: boolean, description: Defaults to true when the sanitizer is salt. }
+
+    Pool:
+      allOf:
+        - $ref: "#/components/schemas/PoolInput"
+        - type: object
+          properties:
+            id: { type: integer }
+            created_at: { type: string, format: date-time }
+
+    Company:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        kind: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        address: { type: string }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Readings:
+      type: object
+      description: |
+        Every reading is optional and nullable. A null means nobody measured
+        it, which is not the same as zero, and the chemistry engine treats it
+        that way.
+      properties:
+        free_chlorine: { type: [number, "null"], description: ppm }
+        total_chlorine: { type: [number, "null"], description: ppm }
+        combined_chlorine:
+          type: [number, "null"]
+          description: ppm. Derived from total minus free when not supplied.
+        bromine: { type: [number, "null"], description: ppm }
+        total_salt: { type: [number, "null"], description: ppm }
+        ph: { type: [number, "null"] }
+        total_alkalinity: { type: [number, "null"], description: ppm }
+        calcium_hardness: { type: [number, "null"], description: ppm }
+        cyanuric_acid: { type: [number, "null"], description: "ppm. Stabilizer, CYA, conditioner." }
+        phosphate: { type: [number, "null"], description: ppb }
+        borate: { type: [number, "null"], description: ppm }
+        tds: { type: [number, "null"], description: ppm }
+        temperature: { type: [number, "null"], description: degrees Celsius }
+        total_copper: { type: [number, "null"], description: ppm }
+        free_copper: { type: [number, "null"], description: ppm }
+        combined_copper: { type: [number, "null"], description: ppm }
+        iron: { type: [number, "null"], description: ppm }
+        wqi:
+          type: [number, "null"]
+          description: The index as printed by the testing lab, if it gave one.
+
+    TestInput:
+      allOf:
+        - $ref: "#/components/schemas/Readings"
+        - type: object
+          required: [pool_id]
+          properties:
+            pool_id: { type: integer }
+            tested_at:
+              type: string
+              description: A date or an RFC3339 timestamp. Defaults to now.
+            company_id: { type: integer }
+            company_name:
+              type: string
+              description: Named instead of referenced; created if unknown.
+            operator: { type: string }
+            test_count: { type: integer }
+            weather: { type: string }
+            source: { type: string, default: manual }
+            notes: { type: string, description: Filed as a note on the test. }
+
+    Test:
+      allOf:
+        - $ref: "#/components/schemas/Readings"
+        - type: object
+          properties:
+            id: { type: integer }
+            pool_id: { type: integer }
+            company_id: { type: [integer, "null"] }
+            company_name: { type: string }
+            tested_at: { type: string }
+            operator: { type: string }
+            source: { type: string, examples: [manual, photo] }
+            total_alkalinity_adjusted:
+              type: [number, "null"]
+              description: Computed. Alkalinity less the cyanurate contribution.
+            lsi:
+              type: [number, "null"]
+              description: Computed. The Langelier saturation index.
+            score:
+              type: [integer, "null"]
+              description: Computed. 0–100 water quality score.
+            created_at: { type: string, format: date-time }
+
+    Reading:
+      type: object
+      description: One reading scored against this pool's ideal range.
+      properties:
+        key: { type: string }
+        label: { type: string }
+        value: { type: [number, "null"] }
+        unit: { type: string }
+        ideal: { type: array, items: { type: number }, minItems: 2, maxItems: 2 }
+        status: { type: string, enum: [good, low, high, warning, serious] }
+
+    Alert:
+      type: object
+      description: A cross-parameter warning no single reading could show.
+      properties:
+        title: { type: string }
+        detail: { type: string }
+        severity: { type: string, enum: [good, warning, serious] }
+
+    Treatment:
+      type: object
+      properties:
+        id: { type: integer }
+        test_id: { type: integer }
+        parameter: { type: string }
+        product: { type: string, description: The commodity grade the dose assumes. }
+        amount: { type: [number, "null"] }
+        unit: { type: string }
+        reason: { type: string }
+        note: { type: string }
+        priority:
+          type: integer
+          description: |
+            The safe order of application. Lower goes in first — sequestrant
+            before any oxidiser, alkalinity before pH.
+        source: { type: string, enum: [computed, report, human] }
+        applied: { type: boolean }
+        applied_at: { type: [string, "null"] }
+
+    Note:
+      type: object
+      properties:
+        id: { type: integer }
+        test_id: { type: [integer, "null"] }
+        pool_id: { type: integer }
+        kind: { type: string, enum: [human, ai] }
+        body: { type: string, description: Markdown. }
+        model: { type: string }
+        meta: { type: string, description: The structured analysis, as JSON, for an AI note. }
+        created_at: { type: string, format: date-time }
+
+    TestDetail:
+      type: object
+      properties:
+        test: { $ref: "#/components/schemas/Test" }
+        pool: { $ref: "#/components/schemas/Pool" }
+        readings:
+          type: array
+          items: { $ref: "#/components/schemas/Reading" }
+        alerts:
+          type: array
+          items: { $ref: "#/components/schemas/Alert" }
+        treatments:
+          type: array
+          items: { $ref: "#/components/schemas/Treatment" }
+        notes:
+          type: array
+          items: { $ref: "#/components/schemas/Note" }
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/Attachment" }
+        lsi_verdict: { type: string }
+        lsi_status: { type: string }
+
+    SheetReading:
+      type: object
+      description: What a vision model read off a photographed test sheet.
+      properties:
+        tested_at: { type: string, description: The date printed on the sheet. }
+        company: { type: string }
+        operator: { type: string }
+        values:
+          type: object
+          description: Only the readings actually found on the sheet.
+          additionalProperties: { type: number }
+        notes: { type: string, description: The model's caveat — a blurred row, a cropped column. }
+        confidence:
+          type: number
+          description: |
+            The model's own estimate, 0 to 1. Advisory: it decides what the
+            interface warns about, never what is stored.
+        rejected:
+          type: array
+          description: Readings discarded as impossible for pool water, with the value thrown away.
+          items: { type: string, examples: ["ph=73"] }
+        model: { type: string }
+        provider: { type: string }
+
+    Insight:
+      type: object
+      properties:
+        headline: { type: string }
+        summary: { type: string }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              detail: { type: string }
+              severity: { type: string, enum: [good, warning, serious] }
+        actions: { type: array, items: { type: string } }
+        watch: { type: array, items: { type: string } }
+        model: { type: string }
+        provider: { type: string }
+
+    Category:
+      type: string
+      enum: [chemical, equipment, service, maintenance, utility, opening, closing, other]
+
+    LogEntryInput:
+      type: object
+      required: [pool_id, occurred_on, category, item]
+      properties:
+        pool_id: { type: integer }
+        occurred_on: { type: string, format: date }
+        category: { $ref: "#/components/schemas/Category" }
+        item: { type: string, examples: ["Chlorine", "Salt cell", "Service call"] }
+        quantity: { type: number }
+        unit: { type: string, enum: ["", L, ml, kg, g, bag, jug, puck, tablet, each, hour] }
+        cost: { type: number, description: Dollars. }
+        cost_cents: { type: integer, description: Wins over `cost` if both are sent. }
+        currency: { type: string, default: CAD }
+        vendor: { type: string }
+        company_id: { type: integer }
+        test_id: { type: integer }
+        notes: { type: string }
+
+    LogEntry:
+      allOf:
+        - $ref: "#/components/schemas/LogEntryInput"
+        - type: object
+          properties:
+            id: { type: integer }
+            season_id: { type: [integer, "null"] }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    Season:
+      type: object
+      properties:
+        id: { type: integer }
+        pool_id: { type: integer }
+        name: { type: string }
+        opened_on: { type: string, format: date }
+        closed_on: { type: [string, "null"], format: date }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Attachment:
+      type: object
+      properties:
+        id: { type: integer }
+        pool_id: { type: integer }
+        test_id: { type: [integer, "null"] }
+        kind: { type: string, enum: [receipt, test_sheet] }
+        filename: { type: string, description: The name as uploaded. }
+        content_type: { type: string }
+        size_bytes: { type: integer, description: What is stored. }
+        original_bytes: { type: integer, description: What was uploaded. }
+        width: { type: integer }
+        height: { type: integer }
+        total_cents: { type: integer }
+        currency: { type: string }
+        vendor: { type: string }
+        purchased_on: { type: [string, "null"], format: date }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }

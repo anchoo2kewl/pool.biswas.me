@@ -77,17 +77,11 @@ func VerifyPassword(password, encoded string) error {
 func NewSessionToken() string { return randomToken(32) }
 
 // APIKeyPrefix is the identifying prefix on every issued key.
+//
+// Minting is go-api's job now (see internal/api.TokenScheme); what stays here
+// is the prefix both agree on and the hash, which keys issued before that
+// switch are still verified with.
 const APIKeyPrefix = "pool_sk_"
-
-// NewAPIKey mints a key, returning the plaintext (shown once), a short prefix
-// for display, and the hash to store.
-func NewAPIKey() (key, prefix, hash string) {
-	secret := randomToken(24)
-	key = APIKeyPrefix + secret
-	prefix = key[:len(APIKeyPrefix)+6]
-	hash = HashAPIKey(key)
-	return
-}
 
 // HashAPIKey is a plain SHA-256 of the key. API keys are high-entropy random
 // values, so a slow KDF buys nothing and would cost a hash on every request.

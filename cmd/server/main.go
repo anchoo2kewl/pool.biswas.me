@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/biswas-dev/pool/internal/ai"
 	"github.com/biswas-dev/pool/internal/api"
 	"github.com/biswas-dev/pool/internal/auth"
 	"github.com/biswas-dev/pool/internal/config"
@@ -68,9 +69,23 @@ func main() {
 		log.Fatalf("mount web assets: %v", err)
 	}
 
+	// The AI chains are optional. With nothing configured the app runs exactly
+	// as it does without a key, and the AI endpoints report themselves as
+	// unavailable rather than failing at startup.
+	aiSvc, err := ai.FromSlots(cfg.AISlots, cfg.AIVisionSlots)
+	if err != nil {
+		log.Fatalf("configure AI providers: %v", err)
+	}
+	if aiSvc.Enabled() {
+		log.Printf("AI ready: %s (vision: %s)",
+			strings.Join(aiSvc.Providers(), " → "), strings.Join(aiSvc.VisionProviders(), " → "))
+	} else {
+		log.Print("AI disabled: no provider configured — set POOL_AI_API_KEY or AI_1_*")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.New(db, cfg, static).Routes(),
+		Handler:           api.New(db, cfg, static, aiSvc).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Uploads are capped at 25 MB and analysis calls can take a while, so
 		// the write timeout has to accommodate both.

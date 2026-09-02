@@ -1,64 +1,87 @@
-// Package ai generates water-chemistry insights through any OpenAI-compatible
-// chat-completions endpoint. NVIDIA NIM, OpenRouter, OpenAI, Groq and a local
-// Ollama all speak this dialect, so switching provider is a base-URL change
-// rather than a code change.
+// Package ai turns a go-ai provider chain into the two things this app asks a
+// model for: an analysis of a water test, and the readings off a photographed
+// test sheet.
+//
+// The prompts live here, the parsing is defensive, and every number a model
+// returns is checked against what a pool can physically be before it reaches
+// the database. A model is asked for JSON, not trusted to produce it.
 package ai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
+
+	goai "github.com/anchoo2kewl/go-ai"
 )
 
-// Client talks to one OpenAI-compatible endpoint.
-type Client struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	HTTP    *http.Client
+// Service performs the app's AI calls against a provider chain.
+//
+// Vision gets its own chain because a provider's cheapest text model and its
+// vision model are rarely the same one, and sending an image to a text-only
+// model fails at the provider rather than degrading.
+type Service struct {
+	chain  *goai.Chain
+	vision *goai.Chain
 }
 
-// New builds a client. baseURL should include the /v1 suffix.
-func New(baseURL, apiKey, model string) *Client {
-	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
-		Model:   model,
-		// Reasoning-capable models on shared inference endpoints can take a
-		// while; the request is made from a background job, not a page load.
-		HTTP: &http.Client{Timeout: 120 * time.Second},
+// New builds a Service. A nil vision chain falls back to the text chain, and a
+// nil text chain reports Enabled() == false — so the app runs normally with
+// the AI features simply switched off.
+func New(chain, vision *goai.Chain) *Service {
+	return &Service{chain: chain, vision: vision}
+}
+
+// FromSlots builds a Service from provider slots in priority order. Slots that
+// are not configured are skipped, and an empty set is not an error: it means
+// the feature is off.
+func FromSlots(text, vision []goai.Slot) (*Service, error) {
+	svc := &Service{}
+	if len(text) > 0 {
+		chain, err := goai.NewChainFromSlots(text...)
+		if err != nil && err != goai.ErrNoProviders {
+			return nil, err
+		}
+		svc.chain = chain
 	}
+	if len(vision) > 0 {
+		chain, err := goai.NewChainFromSlots(vision...)
+		if err != nil && err != goai.ErrNoProviders {
+			return nil, err
+		}
+		svc.vision = chain
+	}
+	return svc, nil
 }
 
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+// Enabled reports whether any provider is configured.
+func (s *Service) Enabled() bool { return s != nil && s.chain != nil && s.chain.Len() > 0 }
+
+// Providers lists the text chain, primary first.
+func (s *Service) Providers() []string {
+	if !s.Enabled() {
+		return nil
+	}
+	return s.chain.Names()
 }
 
-type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
+// VisionProviders lists the chain a photo would be sent to.
+func (s *Service) VisionProviders() []string {
+	if !s.Enabled() {
+		return nil
+	}
+	return s.visionChain().Names()
 }
 
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-	} `json:"error"`
+func (s *Service) visionChain() *goai.Chain {
+	if s.vision != nil && s.vision.Len() > 0 {
+		return s.vision
+	}
+	return s.chain
 }
+
+// ErrDisabled is returned when a feature is called with no provider set up.
+var ErrDisabled = fmt.Errorf("ai: no AI provider configured")
 
 // Finding is one observation from the model.
 type Finding struct {
@@ -75,9 +98,10 @@ type Insight struct {
 	Actions  []string  `json:"actions"`
 	Watch    []string  `json:"watch"`
 	Model    string    `json:"model"`
+	Provider string    `json:"provider,omitempty"`
 }
 
-const systemPrompt = `You are a pool water chemistry analyst writing for the pool's owner.
+const analysisPrompt = `You are a pool water chemistry analyst writing for the pool's owner.
 
 You will be given a pool profile, its latest water test, the computed chemistry
 (ideal ranges, saturation index, recommended doses), recent test history, and
@@ -108,103 +132,48 @@ Respond with JSON only, no markdown fence, matching exactly:
   "watch": ["what to re-test and when"]
 }`
 
-// Generate asks the model for an insight. The prompt is assembled by the
-// caller so this package stays free of domain types.
-func (c *Client) Generate(ctx context.Context, userPrompt string) (*Insight, error) {
-	if c.APIKey == "" {
-		return nil, fmt.Errorf("no AI API key configured")
+// Analyse asks the model to interpret a test. The prompt is assembled by the
+// caller, so this package stays free of the app's domain types.
+func (s *Service) Analyse(ctx context.Context, userPrompt string) (*Insight, error) {
+	if !s.Enabled() {
+		return nil, ErrDisabled
 	}
-	body, err := json.Marshal(chatRequest{
-		Model: c.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		},
+
+	resp, err := s.chain.Complete(ctx, goai.Request{
+		System:      analysisPrompt,
+		Messages:    []goai.Message{goai.UserText(userPrompt)},
 		Temperature: 0.3,
 		MaxTokens:   1600,
+		JSON:        true,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("call model: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, err
-	}
-
-	var cr chatResponse
-	if err := json.Unmarshal(raw, &cr); err != nil {
-		return nil, fmt.Errorf("decode model response (%s): %w", resp.Status, err)
-	}
-	if cr.Error != nil {
-		return nil, fmt.Errorf("model error: %s", cr.Error.Message)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("model returned %s", resp.Status)
-	}
-	if len(cr.Choices) == 0 {
-		return nil, fmt.Errorf("model returned no choices")
-	}
-
-	content := cr.Choices[0].Message.Content
-	insight, err := parseInsight(content)
-	if err != nil {
-		return nil, err
-	}
-	insight.Model = c.Model
-	return insight, nil
-}
-
-// parseInsight tolerates the common ways a model wraps JSON: a markdown fence,
-// leading prose, or a reasoning preamble.
-func parseInsight(content string) (*Insight, error) {
-	s := strings.TrimSpace(content)
-	if i := strings.Index(s, "```"); i >= 0 {
-		s = s[i+3:]
-		s = strings.TrimPrefix(s, "json")
-		if j := strings.Index(s, "```"); j >= 0 {
-			s = s[:j]
-		}
-	}
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start < 0 || end <= start {
-		return nil, fmt.Errorf("model did not return JSON: %s", truncate(content, 200))
-	}
-	s = s[start : end+1]
-
 	var in Insight
-	if err := json.Unmarshal([]byte(s), &in); err != nil {
-		return nil, fmt.Errorf("model returned malformed JSON: %w", err)
+	if err := goai.ExtractJSON(resp.Text, &in); err != nil {
+		return nil, fmt.Errorf("the model did not return a usable analysis: %w", err)
 	}
 	if in.Headline == "" && in.Summary == "" && len(in.Findings) == 0 {
-		return nil, fmt.Errorf("model returned an empty analysis")
+		return nil, fmt.Errorf("the model returned an empty analysis")
 	}
 	for i := range in.Findings {
 		switch in.Findings[i].Severity {
 		case "good", "warning", "serious":
 		default:
+			// An unrecognised severity is rendered as a warning rather than
+			// dropped: the observation may still be worth reading.
 			in.Findings[i].Severity = "warning"
 		}
 	}
+	in.Model, in.Provider = resp.Model, resp.Provider
 	return &in, nil
 }
 
-func truncate(s string, n int) string {
+func trimTo(s string, n int) string {
+	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return s[:n]
 }

@@ -9,8 +9,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	goapi "github.com/anchoo2kewl/go-api"
+	gophoto "github.com/anchoo2kewl/go-photo"
+
+	"github.com/biswas-dev/pool/internal/ai"
+	"github.com/biswas-dev/pool/internal/api/spec"
 	"github.com/biswas-dev/pool/internal/auth"
 	"github.com/biswas-dev/pool/internal/config"
 	"github.com/biswas-dev/pool/internal/store"
@@ -21,11 +27,23 @@ type Server struct {
 	DB     *store.DB
 	Cfg    *config.Config
 	Static fs.FS
+	// AI is the server-wide provider chain. A user with their own key gets a
+	// chain of their own instead; see aiService.
+	AI *ai.Service
+
+	// The attachment store is built on first upload, so a server that never
+	// receives one never creates the directory.
+	photoOnce sync.Once
+	photos    *gophoto.Store
+	photoErr  error
 }
 
-// New builds the server.
-func New(db *store.DB, cfg *config.Config, static fs.FS) *Server {
-	return &Server{DB: db, Cfg: cfg, Static: static}
+// New builds the server. A nil AI service simply leaves the AI features off.
+func New(db *store.DB, cfg *config.Config, static fs.FS, aiSvc *ai.Service) *Server {
+	if aiSvc == nil {
+		aiSvc = ai.New(nil, nil)
+	}
+	return &Server{DB: db, Cfg: cfg, Static: static, AI: aiSvc}
 }
 
 const sessionCookie = "pool_session"
@@ -44,6 +62,10 @@ func (s *Server) Routes() http.Handler {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 	mux.HandleFunc("GET /api/config", s.handleClientConfig)
+	// The OpenAPI document is public by design: requiring a credential to
+	// discover how to present a credential is a loop.
+	mux.Handle("GET "+goapi.SpecPath, spec.Document.Handler())
+	mux.Handle("HEAD "+goapi.SpecPath, spec.Document.Handler())
 
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -77,6 +99,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("GET /api/tests", authed(s.handleListTests))
 	mux.Handle("POST /api/tests", authed(s.handleCreateTest))
+	mux.Handle("POST /api/tests/from-photo", authed(s.handleCreateTestFromPhoto))
 	mux.Handle("GET /api/tests/{id}", authed(s.handleGetTest))
 	mux.Handle("PATCH /api/tests/{id}", authed(s.handleUpdateTest))
 	mux.Handle("DELETE /api/tests/{id}", authed(s.handleDeleteTest))
@@ -159,44 +182,92 @@ const userKey ctxKey = "user"
 // (scripts and agents), so every endpoint works both ways.
 func (s *Server) requireAuth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user := s.currentUser(r)
-		if user == nil {
+		user, err := s.resolveUser(r)
+		if errors.Is(err, errNoCredential) && bearerKey(r) == "" && !hasSession(r) {
+			// Nothing was presented at all, which is worth saying plainly:
+			// go-api's message is about a credential that was offered and
+			// refused, and reads as a lie when none was.
 			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if err != nil {
+			// go-api distinguishes the one case where presenting a different
+			// credential of the same kind would help — a read key on a write
+			// endpoint is a 403, not a 401 — and collapses every other
+			// failure to one message, so a prober cannot learn which key
+			// strings were once real.
+			writeError(w, goapi.StatusFor(err), goapi.PublicMessage(err))
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(withUser(r, user)))
 	})
 }
 
+// errNoCredential is the failure when nothing was presented at all. go-api
+// maps it to a 401 alongside every other authentication failure.
+var errNoCredential = goapi.ErrNotFound
+
 // currentUser resolves the caller from a session cookie or an API key.
-func (s *Server) currentUser(r *http.Request) *store.User {
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		key := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-		if strings.HasPrefix(key, auth.APIKeyPrefix) {
-			if u, _, err := s.DB.UserByAPIKeyHash(auth.HashAPIKey(key)); err == nil {
-				return u
-			}
-			return nil
+//
+// Two key formats are accepted. A go-api token, recognised by its prefix and
+// shape, is verified by go-api — which enforces revocation, expiry and the
+// read/write scope against the request method. A key issued before that
+// existed falls through to the original lookup, so nobody's script stops
+// working; those carry no scope enforcement beyond revocation and expiry,
+// which is what they were issued under.
+func (s *Server) resolveUser(r *http.Request) (*store.User, error) {
+	if key := bearerKey(r); key != "" {
+		if TokenScheme.Issued(key) {
+			return s.authenticateToken(r, key)
 		}
-	}
-	// A plain X-API-Key header is accepted too; it is what most scripts reach
-	// for first.
-	if key := strings.TrimSpace(r.Header.Get("X-API-Key")); key != "" {
-		if u, _, err := s.DB.UserByAPIKeyHash(auth.HashAPIKey(key)); err == nil {
-			return u
+		u, _, err := s.DB.UserByAPIKeyHash(auth.HashAPIKey(key))
+		if err != nil {
+			return nil, errNoCredential
 		}
-		return nil
+		return u, nil
 	}
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
-		return nil
+		return nil, errNoCredential
 	}
 	u, err := s.DB.UserBySession(c.Value)
+	if err != nil {
+		return nil, errNoCredential
+	}
+	return u, nil
+}
+
+// currentUser is resolveUser for the places that only need to know whether
+// somebody is signed in — serving the app shell, and the redirects around it.
+func (s *Server) currentUser(r *http.Request) *store.User {
+	u, err := s.resolveUser(r)
 	if err != nil {
 		return nil
 	}
 	return u
 }
+
+// hasSession reports whether a session cookie was sent, regardless of whether
+// it is still valid.
+func hasSession(r *http.Request) bool {
+	_, err := r.Cookie(sessionCookie)
+	return err == nil
+}
+
+// bearerKey pulls an API key out of either header a caller might use.
+//
+// A plain X-API-Key header is accepted alongside the bearer token because it
+// is what most scripts reach for first.
+func bearerKey(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	}
+	return strings.TrimSpace(r.Header.Get("X-API-Key"))
+}
+
+// tokenAuthed reports whether the request presented an API key rather than a
+// session. It is what stops a key from minting another key.
+func tokenAuthed(r *http.Request) bool { return bearerKey(r) != "" }
 
 func userFrom(r *http.Request) *store.User {
 	u, _ := r.Context().Value(userKey).(*store.User)

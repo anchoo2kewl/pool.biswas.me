@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	goai "github.com/anchoo2kewl/go-ai"
 )
 
 // Registration controls who may create an account.
@@ -45,6 +47,17 @@ type Config struct {
 	AIBaseURL string
 	AIAPIKey  string
 	AIModel   string
+	// AIVisionModel reads a photographed test sheet. A provider's text model
+	// and its vision model are rarely the same one, and sending an image to a
+	// text-only model fails at the provider rather than degrading, so the two
+	// are configured separately.
+	AIVisionModel string
+
+	// AISlots and AIVisionSlots are the go-ai fallback chains: primary first,
+	// then each backup. They are built from AI_n_* and AIV_n_* if those are
+	// set, and otherwise from the single POOL_AI_* endpoint above.
+	AISlots       []goai.Slot
+	AIVisionSlots []goai.Slot
 
 	// AdminEmail/AdminPassword seed the first account on an empty database.
 	AdminEmail    string
@@ -82,9 +95,10 @@ func Load() *Config {
 		GoogleClientSecret: env("GOOGLE_CLIENT_SECRET", ""),
 		OAuthStateSecret:   env("OAUTH_STATE_SECRET", ""),
 
-		AIBaseURL: env("POOL_AI_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-		AIAPIKey:  env("POOL_AI_API_KEY", ""),
-		AIModel:   env("POOL_AI_MODEL", "deepseek-ai/deepseek-v4-pro"),
+		AIBaseURL:     env("POOL_AI_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+		AIAPIKey:      env("POOL_AI_API_KEY", ""),
+		AIModel:       env("POOL_AI_MODEL", "deepseek-ai/deepseek-v4-pro"),
+		AIVisionModel: env("POOL_AI_VISION_MODEL", ""),
 
 		AdminEmail:    env("POOL_ADMIN_EMAIL", ""),
 		AdminPassword: env("POOL_ADMIN_PASSWORD", ""),
@@ -103,6 +117,7 @@ func Load() *Config {
 	}
 
 	c.SecureCookies = strings.HasPrefix(c.AppURL, "https://")
+	c.loadAISlots()
 
 	if c.OAuthStateSecret == "" {
 		// Without a stable secret, OAuth state cannot be verified across a
@@ -116,6 +131,43 @@ func Load() *Config {
 	return c
 }
 
+// loadAISlots resolves the provider chains.
+//
+// AI_n_* is go-ai's own convention and takes precedence, so an operator can
+// configure a primary and two backups the same way every one of these apps
+// does. POOL_AI_* stays supported as the single-endpoint shorthand this app
+// shipped with, and is what the settings page writes for a user's own key.
+func (c *Config) loadAISlots() {
+	c.AISlots = goai.SlotsFromEnv("AI")
+	if len(c.AISlots) == 0 && c.AIAPIKey != "" {
+		c.AISlots = []goai.Slot{Slot(c.AIBaseURL, c.AIAPIKey, c.AIModel)}
+	}
+
+	c.AIVisionSlots = goai.SlotsFromEnv("AIV")
+	if len(c.AIVisionSlots) == 0 && c.AIVisionModel != "" && c.AIAPIKey != "" {
+		c.AIVisionSlots = []goai.Slot{Slot(c.AIBaseURL, c.AIAPIKey, c.AIVisionModel)}
+	}
+	// No vision slots is not a failure: the service falls back to the text
+	// chain, which on NVIDIA NIM and OpenRouter is usually multimodal anyway.
+}
+
+// Slot describes one OpenAI-compatible endpoint to go-ai.
+//
+// The provider name is recovered from the base URL where it is one go-ai
+// knows, so the fallback log says "nvidia" rather than "custom". An unknown
+// endpoint keeps its explicit base URL, which is all go-ai needs.
+func Slot(baseURL, apiKey, model string) goai.Slot {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	name := "custom"
+	for _, known := range goai.KnownProviders() {
+		if url := goai.BaseURLFor(known); url != "" && strings.EqualFold(url, baseURL) {
+			name = known
+			break
+		}
+	}
+	return goai.Slot{Provider: name, BaseURL: baseURL, APIKey: apiKey, Model: model}
+}
+
 // GitHubEnabled reports whether GitHub sign-in is configured.
 func (c *Config) GitHubEnabled() bool {
 	return c.GitHubClientID != "" && c.GitHubClientSecret != ""
@@ -126,9 +178,9 @@ func (c *Config) GoogleEnabled() bool {
 	return c.GoogleClientID != "" && c.GoogleClientSecret != ""
 }
 
-// AIEnabled reports whether a server-wide AI key is configured. Users with
-// their own key get insights regardless.
-func (c *Config) AIEnabled() bool { return c.AIAPIKey != "" }
+// AIEnabled reports whether any server-wide AI provider is configured. Users
+// with their own key get insights regardless.
+func (c *Config) AIEnabled() bool { return len(c.AISlots) > 0 }
 
 func env(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {

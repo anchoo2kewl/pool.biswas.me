@@ -48,6 +48,7 @@ export const api = {
   tests: (params) => request('GET', `/api/tests?${new URLSearchParams(params)}`),
   test: (id) => request('GET', `/api/tests/${id}`),
   createTest: (b) => request('POST', '/api/tests', b),
+  createTestFromPhoto: (form) => request('POST', '/api/tests/from-photo', form),
   updateTest: (id, b) => request('PATCH', `/api/tests/${id}`, b),
   deleteTest: (id) => request('DELETE', `/api/tests/${id}`),
   insight: (id) => request('POST', `/api/tests/${id}/insight`, {}),

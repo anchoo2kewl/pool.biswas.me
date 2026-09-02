@@ -1,24 +1,17 @@
 package api
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
-	"image"
-	_ "image/gif" // registered so GIF uploads decode
-	"image/jpeg"
-	_ "image/png" // registered so PNG uploads decode
 	"io"
 	"log"
 	"math"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"golang.org/x/image/draw"
-	_ "golang.org/x/image/webp" // registered so WebP uploads decode
+	gophoto "github.com/anchoo2kewl/go-photo"
 
 	"github.com/biswas-dev/pool/internal/store"
 )
@@ -33,8 +26,30 @@ const (
 	jpegQuality = 72
 )
 
+// photoOptions is how every upload is processed: downscaled to a long edge a
+// photographed test sheet is still readable at, re-encoded, and — for anything
+// that is not a decodable image, a PDF invoice say — kept as it arrived rather
+// than refused, since losing somebody's receipt is worse than storing bytes we
+// did not parse.
+var photoOptions = gophoto.Options{
+	MaxEdge:         maxImageDimension,
+	Quality:         jpegQuality,
+	MaxBytes:        maxUploadBytes,
+	KeepUnsupported: true,
+}
+
 // attachmentsDir is where uploaded files live, under the data directory.
 func (s *Server) attachmentsDir() string { return filepath.Join(s.Cfg.DataDir, "attachments") }
+
+// photoStore is the go-photo store the attachments live in. It is created on
+// first use so a server that never receives an upload never makes the
+// directory.
+func (s *Server) photoStore() (*gophoto.Store, error) {
+	s.photoOnce.Do(func() {
+		s.photos, s.photoErr = gophoto.NewStore(s.attachmentsDir(), photoOptions)
+	})
+	return s.photos, s.photoErr
+}
 
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
@@ -67,39 +82,21 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(file, maxUploadBytes))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not read the upload")
-		return
-	}
-	originalSize := int64(len(raw))
-
-	// Images are downscaled and re-encoded as JPEG; anything else (a PDF, say)
-	// is stored as uploaded.
-	data, contentType, width, height := compressImage(raw, header.Filename)
-
-	if err := os.MkdirAll(s.attachmentsDir(), 0o755); err != nil {
-		log.Printf("create attachments dir: %v", err)
-		writeError(w, http.StatusInternalServerError, "could not store the file")
-		return
-	}
-	sum := sha256.Sum256(data)
-	storedName := hex.EncodeToString(sum[:]) + extensionFor(contentType, header.Filename)
-	path := filepath.Join(s.attachmentsDir(), storedName)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		log.Printf("write attachment: %v", err)
-		writeError(w, http.StatusInternalServerError, "could not store the file")
-		return
-	}
-
 	kind := strings.ToLower(strings.TrimSpace(r.FormValue("kind")))
 	if kind != "test_sheet" {
 		kind = "receipt"
 	}
+
+	saved, err := s.storeUpload(file, header.Filename)
+	if err != nil {
+		writeUploadError(w, err)
+		return
+	}
+
 	rec := &store.Receipt{
-		PoolID: pool.ID, UserID: &u.ID, Filename: header.Filename, StoredName: storedName,
-		ContentType: contentType, SizeBytes: int64(len(data)), OriginalBytes: originalSize,
-		Width: int64(width), Height: int64(height), Kind: kind,
+		PoolID: pool.ID, UserID: &u.ID, Filename: header.Filename, StoredName: saved.RelPath,
+		ContentType: saved.ContentType, SizeBytes: saved.Bytes(), OriginalBytes: saved.OriginalBytes,
+		Width: int64(saved.Width), Height: int64(saved.Height), Kind: kind,
 		Vendor: r.FormValue("vendor"), Notes: r.FormValue("notes"),
 		Currency: orDefault(r.FormValue("currency"), "CAD"),
 	}
@@ -120,9 +117,8 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	created, err := s.DB.CreateReceipt(rec)
+	created, err := s.fileAttachment(rec, saved)
 	if err != nil {
-		os.Remove(path)
 		writeStoreError(w, err)
 		return
 	}
@@ -134,73 +130,75 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, created)
 }
 
-// compressImage downscales and re-encodes an image so stored attachments stay
-// small. Non-images are returned untouched.
-func compressImage(raw []byte, filename string) (data []byte, contentType string, width, height int) {
-	img, _, err := image.Decode(bytes.NewReader(raw))
+// storeUpload runs an upload through go-photo and writes it under a
+// content-addressed name, so identical uploads share one file on disk.
+func (s *Server) storeUpload(r io.Reader, filename string) (*gophoto.Saved, error) {
+	ps, err := s.photoStore()
 	if err != nil {
-		// Not a decodable image (PDF, HEIC without a decoder, corrupt file):
-		// keep it as-is so the user does not lose the document.
-		return raw, detectContentType(raw, filename), 0, 0
+		return nil, err
 	}
-
-	b := img.Bounds()
-	origW, origH := b.Dx(), b.Dy()
-	w, h := origW, origH
-	if w > maxImageDimension || h > maxImageDimension {
-		scale := float64(maxImageDimension) / float64(max(w, h))
-		nw, nh := int(float64(w)*scale), int(float64(h)*scale)
-		dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
-		// CatmullRom keeps small print on a receipt legible after downscaling.
-		draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Over, nil)
-		img, w, h = dst, nw, nh
-	}
-
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
-		return raw, detectContentType(raw, filename), origW, origH
-	}
-	// If re-encoding produced something larger (an already-optimised image, or
-	// synthetic noise that JPEG cannot compress), keep the original bytes —
-	// and report the original dimensions with them, since that is what is
-	// actually being stored.
-	if buf.Len() >= len(raw) {
-		return raw, detectContentType(raw, filename), origW, origH
-	}
-	return buf.Bytes(), "image/jpeg", w, h
+	return ps.Save(r, filename, gophoto.ContentAddressed(""))
 }
 
-func detectContentType(raw []byte, filename string) string {
-	if ct := http.DetectContentType(raw); ct != "application/octet-stream" {
-		return ct
+// fileAttachment records an upload, dealing with the one way the content
+// addressing can bite.
+//
+// Files are named by the hash of their bytes, and stored_name is unique, so
+// uploading something already on record would land on a name a row already
+// holds — most often the same test sheet being filed against a second test.
+// The bytes are identical either way; what the new record needs is a name of
+// its own, so the two can be deleted independently.
+//
+// The collision is checked for rather than caught: the embedded engine reports
+// a constraint violation as a bare "unknown error", which is not something to
+// hang behaviour on.
+func (s *Server) fileAttachment(rec *store.Receipt, saved *gophoto.Saved) (*store.Receipt, error) {
+	if s.storedNameTaken(rec.StoredName) {
+		ps, err := s.photoStore()
+		if err != nil {
+			return nil, err
+		}
+		copied, err := ps.SaveImage(saved.Image, func(img *gophoto.Image) string {
+			return fmt.Sprintf("%s-%d%s", img.SHA256, time.Now().UnixNano(), img.Extension())
+		})
+		if err != nil {
+			return nil, err
+		}
+		rec.StoredName = copied.RelPath
 	}
-	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".pdf":
-		return "application/pdf"
-	case ".heic", ".heif":
-		return "image/heic"
+
+	created, err := s.DB.CreateReceipt(rec)
+	if err != nil {
+		// Nothing points at the file, so it would otherwise sit on disk
+		// forever with no row naming it.
+		s.removeOrphanedFiles([]string{rec.StoredName})
+		return nil, err
+	}
+	return created, nil
+}
+
+// storedNameTaken reports whether a record already claims this stored file.
+func (s *Server) storedNameTaken(name string) bool {
+	var n int64
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM receipts WHERE stored_name = ?`, name).Scan(&n); err != nil {
+		log.Printf("check stored name %s: %v", name, err)
+		return false
+	}
+	return n > 0
+}
+
+// writeUploadError maps go-photo's failures onto statuses a caller can act on.
+func writeUploadError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, gophoto.ErrTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("that file is larger than the %d MB limit", maxUploadBytes>>20))
+	case errors.Is(err, gophoto.ErrUnsupportedType):
+		writeError(w, http.StatusBadRequest, "that file is not an image this can read")
 	default:
-		return "application/octet-stream"
+		log.Printf("store upload: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not store the file")
 	}
-}
-
-func extensionFor(contentType, filename string) string {
-	switch contentType {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	case "application/pdf":
-		return ".pdf"
-	}
-	if ext := filepath.Ext(filename); ext != "" && len(ext) <= 6 {
-		return strings.ToLower(ext)
-	}
-	return ".bin"
 }
 
 func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
@@ -228,9 +226,14 @@ func (s *Server) handleServeAttachment(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	// Join through Base to keep a crafted stored_name from escaping the dir.
-	path := filepath.Join(s.attachmentsDir(), filepath.Base(rec.StoredName))
-	f, err := os.Open(path)
+	// The store owns the containment check, so a crafted stored_name cannot
+	// escape the attachments directory however it got into the database.
+	ps, err := s.photoStore()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read the file")
+		return
+	}
+	f, err := ps.Open(rec.StoredName)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "the file is no longer on disk")
 		return
@@ -350,11 +353,7 @@ func (s *Server) handleDeleteAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 	// The same bytes may back another row (content-addressed names), so only
 	// remove the file when nothing else references it.
-	var others int64
-	s.DB.QueryRow(`SELECT COUNT(*) FROM receipts WHERE stored_name = ?`, storedName).Scan(&others)
-	if others == 0 {
-		os.Remove(filepath.Join(s.attachmentsDir(), filepath.Base(storedName)))
-	}
+	s.removeOrphanedFiles([]string{storedName})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -375,13 +374,6 @@ func parseFloat(s string) float64 {
 	return f
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // removeOrphanedFiles deletes stored attachment files whose last database row
 // has gone. Attachment filenames are content-addressed, so the same bytes can
 // back several rows; a file is only removed once nothing references it.
@@ -395,7 +387,12 @@ func (s *Server) removeOrphanedFiles(storedNames []string) {
 		if remaining > 0 {
 			continue
 		}
-		if err := os.Remove(filepath.Join(s.attachmentsDir(), filepath.Base(name))); err != nil && !os.IsNotExist(err) {
+		ps, err := s.photoStore()
+		if err != nil {
+			log.Printf("open attachment store: %v", err)
+			return
+		}
+		if err := ps.Remove(name); err != nil {
 			log.Printf("remove attachment %s: %v", name, err)
 		}
 	}

@@ -9,36 +9,37 @@ import (
 	"strings"
 	"time"
 
+	goai "github.com/anchoo2kewl/go-ai"
 	"github.com/biswas-dev/pool/internal/ai"
 	"github.com/biswas-dev/pool/internal/chem"
+	"github.com/biswas-dev/pool/internal/config"
 	"github.com/biswas-dev/pool/internal/store"
 )
 
-// aiClient builds the LLM client for a user, preferring their own credentials
-// over the server's shared key so usage is billed to whoever configured it.
-func (s *Server) aiClient(u *store.User) (*ai.Client, error) {
-	key := u.AIAPIKey
-	baseURL := u.AIBaseURL
-	model := u.AIModel
-	if key == "" {
-		key = s.Cfg.AIAPIKey
-		if baseURL == "" {
-			baseURL = s.Cfg.AIBaseURL
+// aiService resolves the provider chain for a request.
+//
+// A user's own credentials win over the server's, so usage is billed to
+// whoever configured it. Their key is a single endpoint rather than a chain:
+// somebody pasting a key into a settings box is configuring one provider, and
+// silently failing over to the server's would spend the operator's money on a
+// request the user asked to pay for themselves.
+func (s *Server) aiService(u *store.User) (*ai.Service, error) {
+	if u.AIAPIKey != "" {
+		slot := config.Slot(
+			firstNonEmpty(u.AIBaseURL, s.Cfg.AIBaseURL),
+			u.AIAPIKey,
+			firstNonEmpty(u.AIModel, s.Cfg.AIModel),
+		)
+		vision := slot
+		if s.Cfg.AIVisionModel != "" && u.AIModel == "" {
+			vision.Model = s.Cfg.AIVisionModel
 		}
-		if model == "" {
-			model = s.Cfg.AIModel
-		}
+		return ai.FromSlots([]goai.Slot{slot}, []goai.Slot{vision})
 	}
-	if baseURL == "" {
-		baseURL = s.Cfg.AIBaseURL
+	if s.AI.Enabled() {
+		return s.AI, nil
 	}
-	if model == "" {
-		model = s.Cfg.AIModel
-	}
-	if key == "" {
-		return nil, fmt.Errorf("no AI key configured — add one in Settings to enable insights")
-	}
-	return ai.New(baseURL, key, model), nil
+	return nil, fmt.Errorf("no AI key configured — add one in Settings to enable insights")
 }
 
 // handleGenerateInsight analyses a test with the LLM and stores the result as
@@ -60,7 +61,7 @@ func (s *Server) handleGenerateInsight(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	client, err := s.aiClient(u)
+	svc, err := s.aiService(u)
 	if err != nil {
 		writeError(w, http.StatusPreconditionFailed, err.Error())
 		return
@@ -77,22 +78,29 @@ func (s *Server) handleGenerateInsight(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 150*time.Second)
 	defer cancel()
 
-	insight, err := client.Generate(ctx, prompt)
+	insight, err := svc.Analyse(ctx, prompt)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "the model could not be reached: "+err.Error())
 		return
 	}
 
-	meta, _ := json.Marshal(insight)
-	note, err := s.DB.CreateNote(&store.Note{
-		TestID: &test.ID, PoolID: pool.ID, UserID: &u.ID, Kind: "ai",
-		Body: renderInsight(insight), Model: insight.Model, Meta: string(meta),
-	})
+	note, err := s.saveInsight(u, pool, test, insight)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"note": note, "insight": insight})
+}
+
+// saveInsight files an analysis as an AI note beside the human ones, keeping
+// the structured JSON alongside the rendered markdown so the interface can
+// present either.
+func (s *Server) saveInsight(u *store.User, pool *store.Pool, test *store.Test, in *ai.Insight) (*store.Note, error) {
+	meta, _ := json.Marshal(in)
+	return s.DB.CreateNote(&store.Note{
+		TestID: &test.ID, PoolID: pool.ID, UserID: &u.ID, Kind: "ai",
+		Body: renderInsight(in), Model: in.Model, Meta: string(meta),
+	})
 }
 
 // buildPrompt assembles everything the model needs: the pool, the test, the

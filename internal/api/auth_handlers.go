@@ -400,59 +400,6 @@ func (s *Server) handleSetAISettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
-// ── API keys ─────────────────────────────────────────────────────────────
-
-func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := s.DB.ListAPIKeys(userFrom(r).ID)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, keys)
-}
-
-func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
-	u := userFrom(r)
-	var req struct {
-		Name      string `json:"name"`
-		Scopes    string `json:"scopes"`
-		ExpiresAt string `json:"expires_at"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if strings.TrimSpace(req.Name) == "" {
-		req.Name = "API key"
-	}
-	if req.Scopes == "" {
-		req.Scopes = "read,write"
-	}
-
-	key, prefix, hash := auth.NewAPIKey()
-	created, err := s.DB.CreateAPIKey(u.ID, req.Name, prefix, hash, req.Scopes, req.ExpiresAt)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	// The plaintext key is returned exactly once, here.
-	created.Key = key
-	writeJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r, "id")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid key id")
-		return
-	}
-	if err := s.DB.RevokeAPIKey(userFrom(r).ID, id); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
-}
-
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if strings.TrimSpace(v) != "" {
