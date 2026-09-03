@@ -10,7 +10,17 @@ async function request(method, path, body, opts = {}) {
     init.body = JSON.stringify(body);
   }
 
-  const res = await fetch(path, init);
+  let res;
+  try {
+    res = await fetch(path, init);
+  } catch (e) {
+    // A fetch that never completes surfaces as "Load failed" or "Failed to
+    // fetch", which tells the person nothing. Reading a photographed sheet is
+    // the one call here slow enough to be cut off in transit, so say that.
+    throw new Error(
+      'The server did not answer. If you were reading a test sheet, the model '
+      + 'may have taken too long — try again, or enter the readings by hand.');
+  }
 
   if (res.status === 401 && !opts.allowUnauthorized) {
     window.location.href = '/login';

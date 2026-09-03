@@ -143,8 +143,10 @@ func (s *Service) Analyse(ctx context.Context, userPrompt string) (*Insight, err
 		System:      analysisPrompt,
 		Messages:    []goai.Message{goai.UserText(userPrompt)},
 		Temperature: 0.3,
-		MaxTokens:   1600,
-		JSON:        true,
+		// Room for a reasoning model to think and still answer; see the note
+		// on the transcription request.
+		MaxTokens: 8000,
+		JSON:      true,
 	})
 	if err != nil {
 		return nil, err

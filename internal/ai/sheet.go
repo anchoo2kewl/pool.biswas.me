@@ -225,8 +225,12 @@ func (s *Service) ReadTestSheet(ctx context.Context, image []byte, mediaType, hi
 		Messages: []goai.Message{goai.UserImage(prompt, mediaType, image)},
 		// Transcription is the one task where creativity is purely a defect.
 		Temperature: 0,
-		MaxTokens:   1600,
-		JSON:        true,
+		// Generous, because a reasoning model spends this budget thinking
+		// before it answers, and when it runs out mid-thought the reply comes
+		// back with empty content and no error. DeepSeek returned nothing at
+		// 1200 and again at 6000 on a sheet it reads fine at 16000.
+		MaxTokens: 16000,
+		JSON:      true,
 	})
 	if err != nil {
 		return nil, err
