@@ -414,9 +414,35 @@ function renderSheetPanel(el, test) {
         </a>`).join('')}
     </div>` : `<p class="small muted" style="margin:0 0 .75rem">Photograph the printout and keep it with the readings — useful when a number looks wrong months later.</p>`}
     <input type="file" id="sheet-file" accept="image/*,application/pdf" style="display:none">
-    <button class="btn btn-sm btn-block" id="sheet-upload">${sheets.length ? 'Add another photo' : 'Attach the test sheet'}</button>`;
+    <button class="btn btn-sm btn-block" id="sheet-upload">${sheets.length ? 'Add another photo' : 'Attach the test sheet'}</button>
+    ${sheets.some(a => a.content_type.startsWith('image/')) ? `
+      <button class="btn btn-sm btn-block" style="margin-top:.4rem" id="sheet-parse"
+        data-id="${sheets.find(a => a.content_type.startsWith('image/')).id}">
+        Read this sheet into a new test</button>
+      <span class="hint">Extracts the readings from the stored image — useful for a sheet filed before this existed.</span>` : ''}`;
 
   $('#sheet-upload', el).addEventListener('click', () => $('#sheet-file', el).click());
+
+  const parseBtn = $('#sheet-parse', el);
+  if (parseBtn) {
+    parseBtn.addEventListener('click', async () => {
+      parseBtn.disabled = true;
+      parseBtn.innerHTML = '<span class="spinner"></span> Reading the sheet…';
+      try {
+        const detail = await api.parseAttachment(Number(parseBtn.dataset.id));
+        toast('Read into a new test', 'ok');
+        state.tests = []; state.trends = null;
+        await loadPool();
+        modal('Read from the stored sheet', '<div class="stack"></div>', (body, close) => {
+          renderPhotoResult(body, detail, close);
+        });
+      } catch (e) {
+        toast(e.message, 'err');
+        parseBtn.disabled = false;
+        parseBtn.textContent = 'Read this sheet into a new test';
+      }
+    });
+  }
   $('#sheet-file', el).addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;

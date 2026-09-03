@@ -79,7 +79,15 @@ func (s *Server) handleCreateTestFromPhoto(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 150*time.Second)
 	defer cancel()
 
-	read, err := svc.ReadTestSheet(ctx, img.Data, img.ContentType, r.FormValue("hint"))
+	in := sheetOverrides{
+		TestedAt:    r.FormValue("tested_at"),
+		CompanyName: r.FormValue("company_name"),
+		Notes:       r.FormValue("notes"),
+		Hint:        r.FormValue("hint"),
+		Analyse:     !isFalse(r.FormValue("analyse")),
+	}
+
+	read, err := svc.ReadTestSheet(ctx, img.Data, img.ContentType, in.Hint)
 	if err != nil {
 		if errors.Is(err, ai.ErrDisabled) {
 			writeError(w, http.StatusPreconditionFailed, err.Error())
@@ -91,7 +99,7 @@ func (s *Server) handleCreateTestFromPhoto(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	test, err := s.testFromReading(u, pool, r, read)
+	test, err := s.testFromReading(u, pool, in, read)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -105,28 +113,150 @@ func (s *Server) handleCreateTestFromPhoto(w http.ResponseWriter, r *http.Reques
 	out := s.testDetail(pool, test)
 	out["parsed"] = read
 	out["attachment"] = attachment
-
-	// The analysis is the point of having entered the test at all, so it runs
-	// here unless the caller asks it not to. If the model fails on this second
-	// call the test still stands; the caller is told why there is no analysis
-	// and can retry it on its own endpoint.
-	if !isFalse(r.FormValue("analyse")) {
-		if insight, err := svc.Analyse(ctx, mustPrompt(s, u, pool, test)); err != nil {
-			out["insight_error"] = err.Error()
-		} else if note, err := s.saveInsight(u, pool, test, insight); err != nil {
-			log.Printf("save insight for test %d: %v", test.ID, err)
-			out["insight"] = insight
-		} else {
-			out["insight"] = insight
-			out["note"] = note
-			// Re-read the notes so the caller's copy includes the one just
-			// written, rather than showing an analysis the test appears not
-			// to have.
-			out["notes"], _ = s.DB.ListNotes(pool.ID, &test.ID)
-		}
-	}
+	s.analyseInto(ctx, out, svc, u, pool, test, in.Analyse)
 
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// handleParseAttachment turns an image already in the attachment store into a
+// test, without uploading it again.
+//
+// This is the other half of the same feature. An upload can already go through
+// POST /api/attachments, where go-photo sniffs, downscales, re-encodes and
+// stores it; this reads those stored bytes back and extracts the readings from
+// them. So a sheet photographed and filed weeks ago can still become a scored
+// test, and a caller that already has an attachment id does not have to send
+// the picture a second time.
+func (s *Server) handleParseAttachment(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid attachment id")
+		return
+	}
+	rec, err := s.DB.Receipt(u.ID, id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	pool, err := s.DB.Pool(u.ID, rec.PoolID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	var req struct {
+		TestedAt    string `json:"tested_at"`
+		CompanyName string `json:"company_name"`
+		Notes       string `json:"notes"`
+		Hint        string `json:"hint"`
+		Analyse     *bool  `json:"analyse"`
+	}
+	// A bare POST with no body is the common case from the interface, so an
+	// empty request is not an error.
+	if r.ContentLength > 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	in := sheetOverrides{
+		TestedAt: req.TestedAt, CompanyName: req.CompanyName,
+		Notes: req.Notes, Hint: req.Hint, Analyse: req.Analyse == nil || *req.Analyse,
+	}
+
+	// A vision model needs an image. A PDF invoice is a perfectly good
+	// attachment and simply cannot be read here, so say which it is rather
+	// than sending bytes no model can decode.
+	if !strings.HasPrefix(rec.ContentType, "image/") {
+		writeError(w, http.StatusUnsupportedMediaType,
+			"only an image can be read; this attachment is "+rec.ContentType)
+		return
+	}
+
+	svc, err := s.aiService(u)
+	if err != nil {
+		writeError(w, http.StatusPreconditionFailed, err.Error())
+		return
+	}
+
+	ps, err := s.photoStore()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not open the attachment store")
+		return
+	}
+	f, err := ps.Open(rec.StoredName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "the file is no longer on disk")
+		return
+	}
+	defer f.Close()
+	raw, err := readUpload(f, maxUploadBytes)
+	if err != nil {
+		writeUploadError(w, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 150*time.Second)
+	defer cancel()
+
+	read, err := svc.ReadTestSheet(ctx, raw, rec.ContentType, in.Hint)
+	if err != nil {
+		if errors.Is(err, ai.ErrDisabled) {
+			writeError(w, http.StatusPreconditionFailed, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	test, err := s.testFromReading(u, pool, in, read)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	// The attachment is already stored, so filing it against the test it
+	// produced is a row update rather than another copy of the bytes.
+	rec.TestID = &test.ID
+	rec.Kind = "test_sheet"
+	if err := s.DB.UpdateReceipt(rec); err != nil {
+		log.Printf("link attachment %d to test %d: %v", rec.ID, test.ID, err)
+	}
+
+	out := s.testDetail(pool, test)
+	out["parsed"] = read
+	out["attachment"] = rec
+	s.analyseInto(ctx, out, svc, u, pool, test, in.Analyse)
+
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// analyseInto runs the analysis and folds it into the response.
+//
+// It is the point of having entered the test at all, so it runs unless the
+// caller opts out. A failure here does not undo the test: the caller is told
+// why there is no analysis and can retry it on its own endpoint.
+func (s *Server) analyseInto(ctx context.Context, out map[string]any, svc *ai.Service,
+	u *store.User, pool *store.Pool, test *store.Test, wanted bool) {
+	if !wanted {
+		return
+	}
+	insight, err := svc.Analyse(ctx, mustPrompt(s, u, pool, test))
+	if err != nil {
+		out["insight_error"] = err.Error()
+		return
+	}
+	note, err := s.saveInsight(u, pool, test, insight)
+	out["insight"] = insight
+	if err != nil {
+		log.Printf("save insight for test %d: %v", test.ID, err)
+		return
+	}
+	out["note"] = note
+	// Re-read the notes so the caller's copy includes the one just written,
+	// rather than showing an analysis the test appears not to have.
+	out["notes"], _ = s.DB.ListNotes(pool.ID, &test.ID)
 }
 
 // sheetPhotoOptions differ from an ordinary attachment's: a test sheet is
@@ -142,11 +272,21 @@ var sheetPhotoOptions = gophoto.Options{
 
 // testFromReading stores a transcribed sheet as a test, with the same
 // derivation and dosing every other test gets.
-func (s *Server) testFromReading(u *store.User, pool *store.Pool, r *http.Request, read *ai.SheetReading) (*store.Test, error) {
+// sheetOverrides is what the caller supplied alongside the photo, whichever
+// way it arrived — a multipart upload or a JSON call naming a stored image.
+type sheetOverrides struct {
+	TestedAt    string
+	CompanyName string
+	Notes       string
+	Hint        string
+	Analyse     bool
+}
+
+func (s *Server) testFromReading(u *store.User, pool *store.Pool, in sheetOverrides, read *ai.SheetReading) (*store.Test, error) {
 	// A date typed by the person wins over one read off the paper: they know
 	// which day they are filing, and a misread year is the kind of mistake
 	// that quietly reorders a whole season.
-	testedAt := firstNonEmpty(r.FormValue("tested_at"), read.TestedAt)
+	testedAt := firstNonEmpty(in.TestedAt, read.TestedAt)
 	if stamp, err := normaliseTimestamp(testedAt); err == nil {
 		testedAt = stamp
 	} else {
@@ -162,7 +302,7 @@ func (s *Server) testFromReading(u *store.User, pool *store.Pool, r *http.Reques
 	}
 	applyReading(t, read.Values)
 
-	if name := firstNonEmpty(r.FormValue("company_name"), read.Company); strings.TrimSpace(name) != "" {
+	if name := firstNonEmpty(in.CompanyName, read.Company); strings.TrimSpace(name) != "" {
 		if c, err := s.DB.CompanyByName(u.ID, strings.TrimSpace(name), "store"); err == nil {
 			t.CompanyID = &c.ID
 		}
@@ -187,7 +327,7 @@ func (s *Server) testFromReading(u *store.User, pool *store.Pool, r *http.Reques
 			TestID: &created.ID, PoolID: pool.ID, UserID: &u.ID, Kind: "human", Body: note,
 		})
 	}
-	if extra := strings.TrimSpace(r.FormValue("notes")); extra != "" {
+	if extra := strings.TrimSpace(in.Notes); extra != "" {
 		s.DB.CreateNote(&store.Note{
 			TestID: &created.ID, PoolID: pool.ID, UserID: &u.ID, Kind: "human", Body: extra,
 		})

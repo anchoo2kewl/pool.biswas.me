@@ -151,6 +151,7 @@ curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
     <div class="ep"><span class="verb get">GET</span><span>/api/attachments?pool_id=&amp;kind=&amp;test_id=</span></div>
     <div class="ep"><span class="verb get">GET</span><span>/api/attachments/{id}/file</span></div>
     <div class="ep"><span class="verb post">POST</span><span>/api/attachments/{id}/link</span><span class="desc">attach to a log entry</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/attachments/{id}/parse</span><span class="desc">read a stored sheet into a test</span></div>
     <div class="ep"><span class="verb delete">DELETE</span><span>/api/attachments/{id}</span></div>
 
     <h3>Analytics</h3>
@@ -186,6 +187,18 @@ curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
        misread, and a wrong number here becomes a dose recommendation. Whatever the model could not read is filed as
        a note on the test, so a blank row still has an explanation months later.</p>
     <p>Requires an AI provider — the server's, or your own key from <code>PUT /api/me/ai</code>.</p>
+
+    <h3>Or read a sheet you already uploaded</h3>
+    <p>Upload through <code>/api/attachments</code> — where the image is sniffed, downscaled and re-encoded — and
+       then point <code>/parse</code> at it. The picture never has to be sent twice, and a sheet filed weeks ago can
+       still become a scored test.</p>
+    <pre>ID=$(curl -sX POST $BASE/attachments \
+  -H "Authorization: Bearer $KEY" \
+  -F "file=@sheet.jpg" -F "pool_id=1" -F "kind=test_sheet" | jq .id)
+
+curl -sX POST $BASE/attachments/$ID/parse -H "Authorization: Bearer $KEY"</pre>
+    <p>The attachment is filed against the test it produces. Both paths return the same document: the test detail,
+       <code>parsed</code>, and <code>insight</code>.</p>
   </section>
 
   <section class="glass card">

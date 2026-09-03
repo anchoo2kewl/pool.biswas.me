@@ -127,6 +127,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("DELETE /api/attachments/{id}", authed(s.handleDeleteAttachment))
 	mux.Handle("GET /api/attachments/{id}/file", authed(s.handleServeAttachment))
 	mux.Handle("POST /api/attachments/{id}/link", authed(s.handleLinkAttachment))
+	mux.Handle("POST /api/attachments/{id}/parse", authed(s.handleParseAttachment))
 
 	mux.Handle("GET /api/analytics/summary", authed(s.handleAnalyticsSummary))
 	mux.Handle("GET /api/analytics/costs", authed(s.handleAnalyticsCosts))

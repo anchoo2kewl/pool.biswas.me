@@ -74,6 +74,7 @@ export const api = {
   attachments: (params) => request('GET', `/api/attachments?${new URLSearchParams(params)}`),
   deleteAttachment: (id) => request('DELETE', `/api/attachments/${id}`),
   linkAttachment: (id, b) => request('POST', `/api/attachments/${id}/link`, b),
+  parseAttachment: (id, b) => request('POST', `/api/attachments/${id}/parse`, b || {}),
 
   keys: () => request('GET', '/api/keys'),
   createKey: (b) => request('POST', '/api/keys', b),

@@ -34,7 +34,9 @@ comparison.
 and the whole of it — twenty readings, the date, who tested it — becomes a
 scored test with a dosing plan, without typing a number. The photo is filed
 against the test, so the readings can always be checked against the paper they
-came from, and the analysis runs in the same request.
+came from, and the analysis runs in the same request. A sheet already uploaded
+as an attachment can be read the same way, so one filed before any of this
+existed still becomes a scored test.
 
 Readings that are physically impossible for pool water — a pH of 73, a negative
 hardness — are discarded rather than corrected: there is no way to know which

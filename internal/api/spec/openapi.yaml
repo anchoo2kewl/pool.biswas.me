@@ -774,6 +774,66 @@ paths:
       responses:
         "200": { description: Linked. }
 
+  /api/attachments/{id}/parse:
+    post:
+      tags: [Attachments, Water tests, AI]
+      summary: Read a stored sheet into a test
+      description: |
+        Turns an image already in the attachment store into a test, without
+        uploading it again.
+
+        This is the other half of `POST /api/tests/from-photo`. Upload through
+        `POST /api/attachments`, where the image is sniffed, downscaled,
+        re-encoded and stored; then point this at the attachment id and the
+        readings are extracted from those stored bytes. A sheet photographed
+        and filed weeks ago can still become a scored test, and a caller
+        holding an attachment id never has to send the picture twice.
+
+        The attachment is filed against the test it produced and its kind
+        becomes `test_sheet`. The response is the same document
+        `from-photo` returns, `parsed` and `insight` included.
+
+        The attachment must be an image — a PDF cannot be read.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        description: Optional. A bare POST with no body is fine.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tested_at:
+                  type: string
+                  description: Overrides the date printed on the sheet.
+                company_name:
+                  type: string
+                  description: Overrides the company printed on the sheet. Created if unknown.
+                hint: { type: string }
+                notes: { type: string }
+                analyse:
+                  type: boolean
+                  default: true
+                  description: Send false to store the test without running the analysis.
+      responses:
+        "201":
+          description: The stored test, what was read off the sheet, and the analysis.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/TestDetail"
+                  - type: object
+                    properties:
+                      parsed: { $ref: "#/components/schemas/SheetReading" }
+                      attachment: { $ref: "#/components/schemas/Attachment" }
+                      insight: { $ref: "#/components/schemas/Insight" }
+                      note: { $ref: "#/components/schemas/Note" }
+                      insight_error: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "412": { description: No AI provider is configured. }
+        "415": { description: The attachment is not an image. }
+        "422": { description: Nothing legible could be read from it. }
+
   /api/analytics/summary:
     get:
       tags: [Analytics]
