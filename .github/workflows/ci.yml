@@ -69,7 +69,17 @@ jobs:
       - run: go vet ./...
 
       - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
+        # -p 1 runs one package's tests at a time.
+        #
+        # turso-go extracts its ~150MB native library to one fixed path on
+        # first use, and decides it is already there if the file exists with a
+        # non-zero size. Two test binaries starting together — store and api
+        # both link it — race: one is still copying while the other sees a
+        # part-written file, calls it done, and dlopens it. Mapping a library
+        # past its end is a SIGBUS, and the crash lands in cgo with no hint of
+        # the cause. Serialising the packages avoids the overlap entirely; the
+        # suite takes seconds, so it costs nothing worth having.
+        run: go test -race -p 1 -coverprofile=coverage.out ./...
 
       - run: go tool cover -func=coverage.out | tail -1
 
