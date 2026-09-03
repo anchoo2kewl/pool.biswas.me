@@ -98,6 +98,11 @@ function wireChrome() {
     window.location.href = '/';
   });
   $('#add-test').addEventListener('click', () => openTestForm());
+  $('#add-sheet').addEventListener('click', () => {
+    // Reachable on first run, before there is a pool for a test to belong to.
+    if (!state.pool) return toast('Add your pool first', 'err');
+    openPhotoTestForm();
+  });
   $('#add-log').addEventListener('click', () => openLogForm());
 }
 
