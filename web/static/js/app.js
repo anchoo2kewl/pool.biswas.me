@@ -824,18 +824,12 @@ async function renderSettings(root) {
       </div>
       <div class="stack">
         <div class="glass card">
-          <div class="card-head"><h3>AI insights</h3></div>
-          <p class="small muted">Insights use any OpenAI-compatible endpoint — NVIDIA NIM, OpenRouter, OpenAI, or a local model. Your key is stored against your account and used only for your pools.</p>
-          <div class="stack" style="gap:.75rem">
-            <div class="field"><label for="ai-base">Base URL</label>
-              <input id="ai-base" placeholder="https://integrate.api.nvidia.com/v1" value="${escapeHtml(state.ai?.base_url || '')}"></div>
-            <div class="field"><label for="ai-model">Model</label>
-              <input id="ai-model" placeholder="deepseek-ai/deepseek-v4-pro" value="${escapeHtml(state.ai?.model || '')}"></div>
-            <div class="field"><label for="ai-key">API key</label>
-              <input id="ai-key" type="password" placeholder="${state.ai?.using_own_key ? '•••••••• (saved)' : 'paste your key'}">
-              <span class="hint">Leave blank to keep the current key. Clear it by saving a single space.</span></div>
-            <button class="btn btn-primary" id="save-ai">Save AI settings</button>
-          </div>
+          <div class="card-head"><h3>AI providers</h3>
+            <button class="btn btn-sm" id="refresh-balance">Check balance</button></div>
+          <p class="small muted">Bring your own keys. Slot 1 is tried first and each one below it is a fallback,
+            so a provider that is rate-limiting or down moves to the next rather than failing.
+            Reading a photographed test sheet needs a vision model, which is why it has its own chain.</p>
+          <div id="ai-providers"></div>
         </div>
 
         <div class="glass card">
@@ -861,23 +855,150 @@ async function renderSettings(root) {
   renderPoolForm($('#pool-form'), state.pool);
   renderSeasonsList($('#seasons-list'));
 
-  $('#save-ai').addEventListener('click', async () => {
-    const key = $('#ai-key').value;
-    try {
-      await api.setAI({
-        api_key: key === '' ? (state.ai?.using_own_key ? undefined : '') : key.trim(),
-        base_url: $('#ai-base').value.trim(),
-        model: $('#ai-model').value.trim(),
-      });
-      toast('AI settings saved', 'ok');
-      const me = await api.me();
-      state.ai = me.ai;
-    } catch (e) { toast(e.message, 'err'); }
-  });
+  await renderAIProviders();
+  $('#refresh-balance').addEventListener('click', () => renderAIProviders({ balance: true }));
 
   $('#add-season').addEventListener('click', openSeasonForm);
   $('#new-key').addEventListener('click', openKeyForm);
   await refreshKeys();
+}
+
+/* ── AI providers ─────────────────────────────────────────────────────
+ *
+ * Two chains, three slots each, keys never leaving the server. A key is a
+ * personal thing that costs its owner money, so an account that configures
+ * its own uses only those — the operator's key is a convenience for whoever
+ * runs the server, not an allowance for everyone who signs up.
+ */
+let aiChoices = [];
+
+async function renderAIProviders(opts = {}) {
+  const el = $('#ai-providers');
+  if (!el) return;
+  el.innerHTML = '<div class="empty small">Loading…</div>';
+
+  let data;
+  try {
+    data = await api.aiProviders();
+  } catch (e) {
+    el.innerHTML = `<div class="small err">${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  aiChoices = data.providers || [];
+
+  let balances = {};
+  if (opts.balance) {
+    try {
+      const res = await api.aiBalance();
+      for (const k of res.keys) balances[`${k.kind}:${k.slot}`] = k.balance;
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  const chain = (kind, rows) => `
+    <div style="margin-bottom:1rem">
+      <div class="row" style="align-items:baseline;margin-bottom:.4rem">
+        <strong class="small">${kind === 'vision' ? 'Reading a test sheet' : 'Analysis'}</strong>
+        <span class="small dim">${kind === 'vision' ? 'needs a model that can see' : 'text only'}</span>
+      </div>
+      ${[1, 2, 3].map(slot => {
+        const p = rows.find(r => r.slot === slot);
+        const b = balances[`${kind}:${slot}`];
+        return `<div class="row small" style="gap:.5rem;padding:.4rem .6rem;border-radius:8px;
+             background:rgba(255,255,255,.03);margin-bottom:.3rem;align-items:center">
+          <span class="dim mono" style="min-width:1.6rem">${slot}</span>
+          ${p ? `
+            <span style="min-width:6rem"><strong>${escapeHtml(p.provider)}</strong></span>
+            <span class="dim mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escapeHtml(p.model || '—')}</span>
+            <span class="dim mono">${escapeHtml(p.key_hint || (p.has_key ? 'saved' : 'no key'))}</span>
+            ${b ? `<span class="pill ${b.supported ? (b.amount > 0 ? 'pill-good' : 'pill-warning') : 'pill-unknown'}"
+                title="${escapeHtml(b.note || b.error || '')}"><span class="dot"></span>${
+                  b.supported ? escapeHtml(b.display || b.error || '—') : 'free'}</span>` : ''}
+            <button class="btn btn-sm btn-ghost" data-edit="${kind}:${slot}">Edit</button>
+            <button class="btn btn-sm btn-ghost btn-danger" data-drop="${kind}:${slot}">×</button>
+          ` : `
+            <span class="dim" style="flex:1">empty</span>
+            <button class="btn btn-sm" data-edit="${kind}:${slot}">Add</button>
+          `}
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  el.innerHTML = `
+    ${data.using_own_keys
+      ? '<p class="small" style="margin:0 0 .75rem">Running on your own keys.</p>'
+      : `<p class="small" style="margin:0 0 .75rem">Using the server's keys${
+          data.server_chain?.length ? ` (${data.server_chain.map(escapeHtml).join(' → ')})` : ''
+        }. Add your own below — the operator's key is a courtesy, not an allowance.</p>`}
+    ${chain('text', data.text || [])}
+    ${chain('vision', data.vision || [])}
+    <p class="small dim" style="margin:0">NVIDIA NIM is free with a personal key. DeepSeek is pay-as-you-go —
+      "Check balance" asks it what is left.</p>`;
+
+  $$('[data-edit]', el).forEach(b => b.addEventListener('click', () => {
+    const [kind, slot] = b.dataset.edit.split(':');
+    const rows = kind === 'vision' ? data.vision : data.text;
+    openAIProviderForm(kind, Number(slot), rows.find(r => r.slot === Number(slot)));
+  }));
+  $$('[data-drop]', el).forEach(b => b.addEventListener('click', async () => {
+    const [kind, slot] = b.dataset.drop.split(':');
+    if (!confirm(`Remove ${kind} slot ${slot}?`)) return;
+    try {
+      await api.deleteAIProvider(kind, slot);
+      toast('Removed', 'ok');
+      await renderAIProviders();
+    } catch (e) { toast(e.message, 'err'); }
+  }));
+}
+
+function openAIProviderForm(kind, slot, existing) {
+  const choices = kind === 'vision' ? aiChoices.filter(c => c.vision) : aiChoices;
+  modal(`${existing ? 'Edit' : 'Add'} ${kind === 'vision' ? 'sheet-reading' : 'analysis'} provider — slot ${slot}`, `
+    <div class="stack" style="gap:.85rem">
+      <div class="field"><label for="ap-provider">Provider</label>
+        <select id="ap-provider">
+          ${choices.map(c => `<option value="${escapeHtml(c.name)}" ${existing?.provider === c.name ? 'selected' : ''}>
+            ${escapeHtml(c.label)}${c.free ? ' — free' : ''}</option>`).join('')}
+        </select>
+        <span class="hint" id="ap-signup"></span></div>
+      <div class="field"><label for="ap-model">Model</label>
+        <input id="ap-model" value="${escapeHtml(existing?.model || '')}" placeholder="chosen for you if left blank">
+        <span class="hint" id="ap-suggest"></span></div>
+      <div class="field"><label for="ap-key">API key</label>
+        <input id="ap-key" type="password" autocomplete="off"
+          placeholder="${existing?.has_key ? `${escapeHtml(existing.key_hint || 'saved')} — leave blank to keep it` : 'paste your key'}">
+        <span class="hint">Stored against your account and sent only to the provider you chose.</span></div>
+      <div class="field"><label for="ap-base">Endpoint (optional)</label>
+        <input id="ap-base" value="${escapeHtml(existing?.base_url || '')}" placeholder="filled in automatically">
+        <span class="hint">Only needed for something self-hosted or not listed above.</span></div>
+      <button class="btn btn-primary btn-block" id="ap-save">Save slot ${slot}</button>
+    </div>`, (body, close) => {
+    const sel = $('#ap-provider', body);
+    const sync = () => {
+      const c = choices.find(x => x.name === sel.value) || {};
+      $('#ap-suggest', body).textContent = c.suggested_model ? `Known to work: ${c.suggested_model}` : '';
+      $('#ap-signup', body).innerHTML = c.sign_up
+        ? `Get a key at <a href="${escapeHtml(c.sign_up)}" target="_blank" rel="noopener">${escapeHtml(c.sign_up)}</a>${c.free ? ' — free' : ''}`
+        : '';
+      if (!$('#ap-model', body).value && c.suggested_model) $('#ap-model', body).value = c.suggested_model;
+    };
+    sel.addEventListener('change', () => { $('#ap-model', body).value = ''; sync(); });
+    sync();
+
+    $('#ap-save', body).addEventListener('click', async () => {
+      try {
+        await api.setAIProvider({
+          kind, slot,
+          provider: sel.value,
+          model: $('#ap-model', body).value.trim(),
+          base_url: $('#ap-base', body).value.trim(),
+          api_key: $('#ap-key', body).value.trim(),
+        });
+        close();
+        toast('Saved', 'ok');
+        await renderAIProviders();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  });
 }
 
 async function refreshKeys() {

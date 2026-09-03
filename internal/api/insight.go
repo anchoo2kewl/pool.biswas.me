@@ -24,6 +24,29 @@ import (
 // silently failing over to the server's would spend the operator's money on a
 // request the user asked to pay for themselves.
 func (s *Server) aiService(u *store.User) (*ai.Service, error) {
+	// An account that has configured its own providers uses only those. The
+	// operator's key is a convenience for whoever runs the server, not an
+	// allowance for everyone who signs up — and silently falling back to it
+	// would spend somebody else's money on a request this user asked to pay
+	// for themselves.
+	slots, err := s.DB.AIChainSlots(u.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(slots) > 0 {
+		text, vision := userSlots(slots)
+		svc, err := ai.FromSlots(text, vision)
+		if err != nil {
+			return nil, err
+		}
+		if svc.Enabled() {
+			return svc, nil
+		}
+		return nil, fmt.Errorf("your AI providers are configured but none of them has a key — check Settings")
+	}
+
+	// The single-endpoint settings this app shipped with, still honoured for
+	// an account that set one up before the chain existed.
 	if u.AIAPIKey != "" {
 		slot := config.Slot(
 			firstNonEmpty(u.AIBaseURL, s.Cfg.AIBaseURL),
@@ -36,10 +59,38 @@ func (s *Server) aiService(u *store.User) (*ai.Service, error) {
 		}
 		return ai.FromSlots([]goai.Slot{slot}, []goai.Slot{vision})
 	}
-	if s.AI.Enabled() {
+
+	// The operator's providers serve everyone only when the operator says so.
+	// Otherwise they are theirs alone, and everybody else brings a key.
+	if s.AI.Enabled() && (s.Cfg.AISharedKey || u.Role == "admin") {
 		return s.AI, nil
 	}
-	return nil, fmt.Errorf("no AI key configured — add one in Settings to enable insights")
+	return nil, fmt.Errorf("no AI provider configured — add your own key under Settings → AI providers")
+}
+
+// userSlots splits a user's stored rungs into the two chains go-ai builds
+// from, in slot order.
+func userSlots(slots []store.AIProvider) (text, vision []goai.Slot) {
+	for _, p := range slots {
+		slot := goai.Slot{
+			Provider: p.Provider,
+			Model:    p.Model,
+			APIKey:   p.APIKey,
+			BaseURL:  p.BaseURL,
+		}
+		// A provider go-ai does not know needs an explicit endpoint, and one
+		// it does know needs none — filling it in from the provider's own
+		// table keeps a half-completed form working.
+		if slot.BaseURL == "" && goai.BaseURLFor(p.Provider) == "" && p.Provider != "anthropic" {
+			continue
+		}
+		if p.Kind == store.AIKindVision {
+			vision = append(vision, slot)
+		} else {
+			text = append(text, slot)
+		}
+	}
+	return text, vision
 }
 
 // handleGenerateInsight analyses a test with the LLM and stores the result as

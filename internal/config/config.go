@@ -47,6 +47,15 @@ type Config struct {
 	AIBaseURL string
 	AIAPIKey  string
 	AIModel   string
+	// AISharedKey decides whether the operator's own providers serve everyone
+	// who signs up, or only the operator.
+	//
+	// It defaults to off. A model key is a personal thing that costs its owner
+	// money per request, and a public instance where every visitor spends the
+	// operator's credit is a bill waiting to happen — including the demo
+	// account, which is deliberately open to the world.
+	AISharedKey bool
+
 	// AIVisionModel reads a photographed test sheet. A provider's text model
 	// and its vision model are rarely the same one, and sending an image to a
 	// text-only model fails at the provider rather than degrading, so the two
@@ -103,6 +112,7 @@ func Load() *Config {
 		// so one NIM key behaves identically across both.
 		AIModel:       env("POOL_AI_MODEL", "meta/llama-3.2-90b-vision-instruct"),
 		AIVisionModel: env("POOL_AI_VISION_MODEL", ""),
+		AISharedKey:   env("POOL_AI_SHARED", "false") == "true",
 
 		AdminEmail:    env("POOL_ADMIN_EMAIL", ""),
 		AdminPassword: env("POOL_ADMIN_PASSWORD", ""),

@@ -44,9 +44,17 @@ digit was misread, and a wrong number here becomes a dose recommendation.
 Whatever the model could not read is filed as a note, so a blank row still has
 an explanation months later.
 
+**Bring your own model.** Each account configures its own providers, as two
+ordered chains — one for the analysis, one for reading a photographed sheet,
+because a provider's cheapest text model and its vision model are rarely the
+same one. Up to three slots each: slot 1 is tried first and the rest are
+fallbacks. DeepSeek reports what is left on the key; NVIDIA NIM is free with a
+personal key. The operator's own key stays the operator's unless
+`POOL_AI_SHARED=true`.
+
 **AI analysis.** Optional. Any OpenAI-compatible endpoint (NVIDIA NIM,
-OpenRouter, OpenAI, a local model), with a fallback chain: a provider that is
-rate-limiting or down moves to the next one. It reads the test history *and* the
+OpenRouter, OpenAI, Anthropic, a local Ollama), with a fallback chain: a
+provider that is rate-limiting or down moves to the next one. It reads the test history *and* the
 logbook, so it explains why a number moved rather than restating it —
 connecting a chlorine crash to the stabilizer that washed out, or repeated salt
 purchases to a suspected leak.
@@ -105,6 +113,7 @@ photo endpoint answers `412`, and everything else works exactly as before.
 | `POOL_AI_API_KEY` | — | Fallback key; users can set their own |
 | `POOL_AI_MODEL` | `meta/llama-3.2-90b-vision-instruct` | Default model. Vision-capable, because reading a photographed test sheet needs it |
 | `POOL_AI_VISION_MODEL` | — | Model for reading a photographed test sheet; falls back to `POOL_AI_MODEL` |
+| `POOL_AI_SHARED` | `false` | Whether the keys above serve every account, or only the admin. Off, because a model key costs its owner money per request |
 | `AI_1_*` / `AIV_1_*` | — | A go-ai fallback chain for text and vision. Takes precedence over `POOL_AI_*` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enables Google sign-in |
 | `GH_CLIENT_ID` / `GH_CLIENT_SECRET` | — | Enables GitHub sign-in |

@@ -90,6 +90,10 @@ export const api = {
   createKey: (b) => request('POST', '/api/keys', b),
   revokeKey: (id) => request('DELETE', `/api/keys/${id}`),
   setAI: (b) => request('PUT', '/api/me/ai', b),
+  aiProviders: () => request('GET', '/api/me/ai/providers'),
+  setAIProvider: (b) => request('PUT', '/api/me/ai/providers', b),
+  deleteAIProvider: (kind, slot) => request('DELETE', `/api/me/ai/providers/${kind}/${slot}`),
+  aiBalance: () => request('GET', '/api/me/ai/balance'),
 
   summary: (poolID) => request('GET', `/api/analytics/summary?pool_id=${poolID}`),
   costs: (params) => request('GET', `/api/analytics/costs?${new URLSearchParams(params)}`),

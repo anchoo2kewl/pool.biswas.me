@@ -139,6 +139,131 @@ paths:
       responses:
         "200": { description: Saved. }
 
+  /api/me/ai/providers:
+    get:
+      tags: [Account, AI]
+      summary: Your own model chains
+      description: |
+        Two chains — `text` for the analysis, `vision` for reading a
+        photographed test sheet — of up to three slots each. Slot 1 is tried
+        first and each one below it is a fallback, so a provider that is
+        rate-limiting or down moves to the next rather than failing.
+
+        Keys are never returned. `has_key` and `key_hint` say whether a slot
+        has one and show the last four characters, which is how the vendors
+        print back a key you already own.
+
+        An account with any slot configured uses only its own providers. The
+        operator's key serves everyone else only when the instance sets
+        `POOL_AI_SHARED=true`; otherwise it belongs to the operator alone.
+      responses:
+        "200":
+          description: The configured chains, and the providers on offer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: array
+                    items: { $ref: "#/components/schemas/AIProvider" }
+                  vision:
+                    type: array
+                    items: { $ref: "#/components/schemas/AIProvider" }
+                  using_own_keys: { type: boolean }
+                  server_chain:
+                    type: array
+                    items: { type: string }
+                    description: The operator's chain, named but not usable unless shared.
+                  max_slots: { type: integer }
+                  providers:
+                    type: array
+                    description: Providers the interface offers, with a model known to work.
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        label: { type: string }
+                        base_url: { type: string }
+                        suggested_model: { type: string }
+                        vision: { type: boolean }
+                        free: { type: boolean }
+                        sign_up: { type: string }
+    put:
+      tags: [Account, AI]
+      summary: Set one slot of one chain
+      description: |
+        Leave `api_key` empty on a slot that already has one and the stored key
+        is kept — so a model or an endpoint can be changed without the secret
+        making another round trip through the browser.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slot, provider]
+              properties:
+                kind: { type: string, enum: [text, vision], default: text }
+                slot: { type: integer, minimum: 1, maximum: 3 }
+                provider: { type: string, examples: [deepseek, nvidia, anthropic, openai] }
+                model: { type: string }
+                base_url:
+                  type: string
+                  description: Only for an endpoint go-ai does not already know.
+                api_key: { type: string }
+      responses:
+        "200":
+          description: The saved slot, key excluded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIProvider" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/me/ai/providers/{kind}/{slot}:
+    delete:
+      tags: [Account, AI]
+      summary: Remove one slot
+      description: |
+        A gap is left rather than renumbering: the chain is read in slot order,
+        and silently promoting a backup is not something to do behind
+        somebody's back.
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [text, vision] } }
+        - { name: slot, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Removed. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/me/ai/balance:
+    get:
+      tags: [Account, AI]
+      summary: What is left on your keys
+      description: |
+        Asks each distinct key what it has left. Only a provider that publishes
+        a balance for an API key can answer, which today means DeepSeek;
+        NVIDIA's build endpoint and a local Ollama are free and say so, because
+        "no balance" and "costs nothing" look identical in an empty field.
+
+        The same key usually appears in both chains and is asked once.
+      responses:
+        "200":
+          description: One entry per distinct key.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind: { type: string }
+                        slot: { type: integer }
+                        key_hint: { type: string }
+                        balance: { $ref: "#/components/schemas/Balance" }
+
   /api/keys:
     get:
       tags: [Account]
@@ -954,6 +1079,43 @@ components:
         has_ai_key: { type: boolean }
         created_at: { type: string, format: date-time }
         last_login_at: { type: string }
+
+    AIProvider:
+      type: object
+      description: One rung of a user's model chain. The key is never included.
+      properties:
+        id: { type: integer }
+        kind: { type: string, enum: [text, vision] }
+        slot: { type: integer }
+        provider: { type: string }
+        model: { type: string }
+        base_url: { type: string }
+        has_key: { type: boolean }
+        key_hint:
+          type: string
+          description: The vendor marker and the last four characters.
+          examples: ["sk-…1234"]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Balance:
+      type: object
+      properties:
+        provider: { type: string }
+        supported:
+          type: boolean
+          description: False when the provider has no balance to report at all.
+        note: { type: string, description: Why there is no figure, in words for a person. }
+        available: { type: boolean }
+        currency: { type: string }
+        amount: { type: number }
+        display:
+          type: string
+          description: The amount as the provider formats it.
+          examples: ["9.95 USD"]
+        error:
+          type: string
+          description: Set when the provider was asked and refused — a revoked key, usually.
 
     APIKey:
       type: object

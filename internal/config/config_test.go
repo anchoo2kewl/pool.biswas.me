@@ -72,3 +72,20 @@ func TestSlotNamesKnownProvidersFromTheirURL(t *testing.T) {
 		t.Errorf("base URL = %q, want it preserved", got)
 	}
 }
+
+// A model key costs its owner money per request, so the operator's providers
+// must not serve every visitor unless the operator has said so.
+func TestSharedKeyIsOffByDefault(t *testing.T) {
+	t.Setenv("POOL_AI_API_KEY", "operator-key")
+	if Load().AISharedKey {
+		t.Error("AISharedKey defaults to true — every signup would spend the operator's credit")
+	}
+	t.Setenv("POOL_AI_SHARED", "true")
+	if !Load().AISharedKey {
+		t.Error("POOL_AI_SHARED=true did not enable sharing")
+	}
+	t.Setenv("POOL_AI_SHARED", "yes")
+	if Load().AISharedKey {
+		t.Error("only an explicit \"true\" should share the operator's key")
+	}
+}

@@ -272,4 +272,30 @@ ALTER TABLE receipts ADD COLUMN height INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE receipts ADD COLUMN original_bytes INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX idx_receipts_test ON receipts(test_id);
 `},
+
+	{"006_ai_providers", `
+-- A user's own model providers, as an ordered fallback chain rather than a
+-- single endpoint: slot 1 is tried first, then 2, then 3. Keys are personal —
+-- the operator's key is a convenience for whoever runs the server, not an
+-- allowance for everyone who signs up — so an account that configures its own
+-- providers uses only those.
+--
+-- kind separates the two chains. A provider's cheapest text model and its
+-- vision model are rarely the same one, and sending a photograph to a
+-- text-only model fails at the provider rather than degrading.
+CREATE TABLE ai_providers (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL DEFAULT 'text',   -- text | vision
+  slot       INTEGER NOT NULL,               -- 1 is the primary, then each backup
+  provider   TEXT NOT NULL,                  -- deepseek | nvidia | anthropic | openai | ...
+  model      TEXT NOT NULL DEFAULT '',
+  base_url   TEXT NOT NULL DEFAULT '',       -- only for an endpoint go-ai does not know
+  api_key    TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(user_id, kind, slot)
+);
+CREATE INDEX idx_ai_providers_user ON ai_providers(user_id, kind, slot);
+`},
 }

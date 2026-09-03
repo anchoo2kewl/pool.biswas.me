@@ -114,6 +114,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/me", authed(s.handleMe))
 	mux.Handle("PATCH /api/me", authed(s.handleUpdateMe))
 	mux.Handle("PUT /api/me/ai", authed(s.handleSetAISettings))
+	mux.Handle("GET /api/me/ai/providers", authed(s.handleListAIProviders))
+	mux.Handle("PUT /api/me/ai/providers", authed(s.handleSetAIProvider))
+	mux.Handle("DELETE /api/me/ai/providers/{kind}/{slot}", authed(s.handleDeleteAIProvider))
+	mux.Handle("GET /api/me/ai/balance", authed(s.handleAIBalance))
 	mux.Handle("POST /api/demo/reset", authed(s.handleDemoReset))
 
 	mux.Handle("GET /api/keys", authed(s.handleListAPIKeys))
