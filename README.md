@@ -59,6 +59,14 @@ logbook, so it explains why a number moved rather than restating it —
 connecting a chlorine crash to the stabilizer that washed out, or repeated salt
 purchases to a suspected leak.
 
+**Or do the reading yourself.** The photo endpoints use whatever model the
+server is configured with. An agent with a better one can do the whole job
+through the ordinary endpoints — post the readings, attach the photo, fetch the
+analysis brief from `/api/tests/{id}/context`, and file the analysis it wrote
+back to `/insight`. The chemistry, the dosing plan and the season rollups are
+computed by the server either way, and an externally written analysis is
+validated the same as a local one and recorded as such.
+
 **An API for everything.** Every action in the interface is an API call, with a
 personal key carrying a `read` or `read,write` scope that is enforced on the
 method. The OpenAPI document is served at `/api/openapi.yaml`; see `/docs` on a

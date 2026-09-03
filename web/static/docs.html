@@ -135,7 +135,8 @@ curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
     <div class="ep"><span class="verb get">GET</span><span>/api/tests/{id}</span><span class="desc">full detail with treatments and notes</span></div>
     <div class="ep"><span class="verb patch">PATCH</span><span>/api/tests/{id}</span></div>
     <div class="ep"><span class="verb delete">DELETE</span><span>/api/tests/{id}</span></div>
-    <div class="ep"><span class="verb post">POST</span><span>/api/tests/{id}/insight</span><span class="desc">generate an AI analysis</span></div>
+    <div class="ep"><span class="verb get">GET</span><span>/api/tests/{id}/context</span><span class="desc">the brief an analysis is written from</span></div>
+    <div class="ep"><span class="verb post">POST</span><span>/api/tests/{id}/insight</span><span class="desc">generate an analysis, or file one you wrote</span></div>
     <div class="ep"><span class="verb post">POST</span><span>/api/treatments/{id}/applied</span><span class="desc"><code>{"applied": true}</code></span></div>
 
     <h3>Logbook and costs</h3>
@@ -199,6 +200,44 @@ curl -sX POST $BASE/log -H "Authorization: Bearer $KEY" \
 curl -sX POST $BASE/attachments/$ID/parse -H "Authorization: Bearer $KEY"</pre>
     <p>The attachment is filed against the test it produces. Both paths return the same document: the test detail,
        <code>parsed</code>, and <code>insight</code>.</p>
+  </section>
+
+  <section class="glass card">
+    <h2>Doing the reading yourself</h2>
+    <p>The photo endpoints call whatever model this server is configured with. If you have a better one — an agent
+       with a frontier vision model, say — do the reading yourself and post the result. Nothing about that path is
+       second-class: the chemistry, the dosing plan and the season rollups are computed by the server either way.</p>
+    <pre># 1. Post the readings you transcribed. Say what did the reading.
+TEST=$(curl -sX POST $BASE/tests -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{
+    "pool_id": 1, "tested_at": "2026-08-22", "source": "claude-code",
+    "operator": "Jet", "test_count": 3, "company_name": "Jameson Pool &amp; Spa",
+    "ph": 7.30, "total_alkalinity": 109, "calcium_hardness": 244,
+    "cyanuric_acid": 23, "free_chlorine": 4.17, "total_copper": 0.50
+  }' | jq -r .test.id)
+
+# 2. Keep the photo with the test it came from.
+curl -sX POST $BASE/attachments -H "Authorization: Bearer $KEY" \
+  -F "file=@sheet.jpg" -F "pool_id=1" -F "kind=test_sheet" -F "test_id=$TEST"
+
+# 3. Fetch the brief — the same context the server would give its own model.
+curl -s $BASE/tests/$TEST/context -H "Authorization: Bearer $KEY" | jq -r .brief
+
+# 4. File the analysis you wrote against those instructions.
+curl -sX POST $BASE/tests/$TEST/insight -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{
+    "headline": "Copper at 0.50 ppm — sequester before any oxidiser",
+    "summary": "...",
+    "findings": [{"title": "...", "detail": "...", "severity": "serious"}],
+    "actions": ["..."], "watch": ["..."],
+    "author": "claude-opus-4.6 via Claude Code"
+  }'</pre>
+    <p>The <code>context</code> response also carries <code>instructions</code> — the prompt the local model is held
+       to. Follow it. It contains the dosing-order rule, which is a safety constraint rather than a stylistic one:
+       metal sequestrant always goes in before any oxidiser.</p>
+    <p>A supplied analysis is validated, bounded and severity-normalised exactly like a locally generated one, and
+       recorded with <code>provider: external</code> so it stays obvious months later which is which. Posting
+       <code>/insight</code> with no body still asks the server to generate one.</p>
   </section>
 
   <section class="glass card">

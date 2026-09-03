@@ -112,6 +112,26 @@ func (s *Server) handleGenerateInsight(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	// An analysis supplied in the body is filed as-is, and no model is called.
+	//
+	// This is the hand-off for an agent that did the reading itself: something
+	// with a stronger model than this server can reach photographs the sheet,
+	// writes the analysis with the context from GET /api/tests/{id}/context,
+	// and posts the result here. The server still owns validation, storage and
+	// rendering, so an external author gets no more trust than a local one.
+	if supplied, ok := s.suppliedInsight(w, r); ok {
+		if supplied == nil {
+			return // the body was malformed and the error is already written
+		}
+		note, err := s.saveInsight(u, pool, test, supplied)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"note": note, "insight": supplied})
+		return
+	}
+
 	svc, err := s.aiService(u)
 	if err != nil {
 		writeError(w, http.StatusPreconditionFailed, err.Error())
@@ -143,6 +163,47 @@ func (s *Server) handleGenerateInsight(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"note": note, "insight": insight})
 }
 
+// suppliedInsight reads an analysis out of the request body, if there is one.
+//
+// The second return says whether the caller supplied anything at all, which is
+// what separates "file this" from "go and generate one" — an empty body, or
+// the `{}` a shell client sends by habit, still means generate.
+func (s *Server) suppliedInsight(w http.ResponseWriter, r *http.Request) (*ai.Insight, bool) {
+	if r.ContentLength == 0 {
+		return nil, false
+	}
+	var req struct {
+		ai.Insight
+		// Author names what wrote it, for the note's byline: "claude-opus-4.6
+		// via Claude Code". It is a claim, not a credential, and is shown as
+		// such.
+		Author string `json:"author"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		// A body that is present but unreadable is a mistake worth reporting,
+		// not a silent fall-through to spending money on a model.
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, true
+	}
+	in := req.Insight
+	if in.Headline == "" && in.Summary == "" && len(in.Findings) == 0 &&
+		len(in.Actions) == 0 && len(in.Watch) == 0 {
+		return nil, false
+	}
+	if err := in.Normalise(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, true
+	}
+	if in.Model == "" {
+		in.Model = trimTo(req.Author, 120)
+	}
+	// Provenance is recorded rather than inferred: an analysis that arrived
+	// over the API did not come from this server's chain, and a reader
+	// months later should be able to tell which is which.
+	in.Provider = "external"
+	return &in, true
+}
+
 // saveInsight files an analysis as an AI note beside the human ones, keeping
 // the structured JSON alongside the rendered markdown so the interface can
 // present either.
@@ -151,6 +212,47 @@ func (s *Server) saveInsight(u *store.User, pool *store.Pool, test *store.Test, 
 	return s.DB.CreateNote(&store.Note{
 		TestID: &test.ID, PoolID: pool.ID, UserID: &u.ID, Kind: "ai",
 		Body: renderInsight(in), Model: in.Model, Meta: string(meta),
+	})
+}
+
+// handleTestContext hands back the brief the analysis is written from.
+//
+// It is the same text the server would put in front of its own model: the
+// pool, the readings scored against it, the derived warnings, the dosing plan,
+// the recent history and the logbook. An agent doing the analysis elsewhere
+// needs exactly this, and assembling it a second time from the other endpoints
+// would be both tedious and a way to drift out of step with what the local
+// path sees.
+func (s *Server) handleTestContext(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid test id")
+		return
+	}
+	test, err := s.DB.Test(u.ID, id)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	pool, err := s.DB.Pool(u.ID, test.PoolID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	brief, err := s.buildPrompt(u, pool, test)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"brief": brief,
+		// The instructions the local model is held to, so an analysis written
+		// elsewhere lands in the same shape and under the same rules — not
+		// least the ordering one, where sequestrant precedes any oxidiser.
+		"instructions": ai.AnalysisPrompt(),
+		"detail":       s.testDetail(pool, test),
 	})
 }
 

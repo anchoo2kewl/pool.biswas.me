@@ -141,6 +141,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/tests/{id}", authed(s.handleGetTest))
 	mux.Handle("PATCH /api/tests/{id}", authed(s.handleUpdateTest))
 	mux.Handle("DELETE /api/tests/{id}", authed(s.handleDeleteTest))
+	mux.Handle("GET /api/tests/{id}/context", authed(s.handleTestContext))
 	mux.Handle("POST /api/tests/{id}/insight", authed(s.handleGenerateInsight))
 	mux.Handle("POST /api/treatments/{id}/applied", authed(s.handleMarkTreatmentApplied))
 

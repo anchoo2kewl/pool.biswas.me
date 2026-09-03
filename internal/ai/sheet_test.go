@@ -107,3 +107,53 @@ func TestDisabledServiceRefuses(t *testing.T) {
 		t.Errorf("err = %v, want ErrDisabled", err)
 	}
 }
+
+// An analysis written by an agent elsewhere gets no more trust than one this
+// server generated: same validation, same bounds, same severity vocabulary.
+func TestNormaliseGuardsASuppliedAnalysis(t *testing.T) {
+	in := &Insight{
+		Headline: "  Copper is high  ",
+		Findings: []Finding{
+			{Title: "Copper", Detail: "0.50 ppm", Severity: "catastrophic"},
+			{Title: "", Detail: ""},
+			{Title: "pH", Detail: "fine", Severity: "good"},
+		},
+		Actions: []string{"  Sequester first  ", "", "   "},
+	}
+	if err := in.Normalise(); err != nil {
+		t.Fatalf("Normalise: %v", err)
+	}
+	if in.Headline != "Copper is high" {
+		t.Errorf("headline = %q, want it trimmed", in.Headline)
+	}
+	if len(in.Findings) != 2 {
+		t.Fatalf("findings = %d, want the empty one dropped", len(in.Findings))
+	}
+	// An unrecognised severity is rendered, so it has to land on a known one.
+	if in.Findings[0].Severity != "warning" {
+		t.Errorf("severity = %q, want an unknown one normalised to warning", in.Findings[0].Severity)
+	}
+	if in.Findings[1].Severity != "good" {
+		t.Errorf("severity = %q, want a valid one kept", in.Findings[1].Severity)
+	}
+	if len(in.Actions) != 1 || in.Actions[0] != "Sequester first" {
+		t.Errorf("actions = %v, want the blanks dropped and the rest trimmed", in.Actions)
+	}
+
+	if err := (&Insight{}).Normalise(); err == nil {
+		t.Error("an empty analysis was accepted")
+	}
+}
+
+// The instructions must travel with the context, or an agent writing the
+// analysis elsewhere has no way to honour the rules the local path follows —
+// the dosing order most of all.
+func TestAnalysisPromptIsAvailableAndCarriesTheSafetyRule(t *testing.T) {
+	p := AnalysisPrompt()
+	if !strings.Contains(p, "sequestrant") {
+		t.Error("the exported instructions do not mention the sequestrant ordering rule")
+	}
+	if !strings.Contains(p, "JSON") {
+		t.Error("the exported instructions do not state the required shape")
+	}
+}

@@ -21,6 +21,16 @@ info:
     sanitizer, so a test posted through the API is scored identically to one
     typed into the app.
 
+    **For an agent doing the reading.** The photo path is a convenience, not the
+    only way in. An agent with a stronger model can do the whole job through
+    the ordinary endpoints: `POST /api/tests` with the readings it transcribed,
+    `POST /api/attachments` with the photo and that `test_id`, then
+    `GET /api/tests/{id}/context` for the brief and `POST
+    /api/tests/{id}/insight` with the analysis it wrote. Nothing about that
+    path is second-class — the chemistry, the dosing plan and the season
+    rollups are computed by the server either way. Set `source` on the test to
+    say what did the reading.
+
     **Money** is stored in minor units. Endpoints that accept a cost take
     either `cost` in dollars or `cost_cents` as an integer; the integer wins if
     both are sent.
@@ -603,17 +613,79 @@ paths:
       responses:
         "200": { description: Deleted. }
 
+  /api/tests/{id}/context:
+    get:
+      tags: [AI]
+      summary: The brief an analysis is written from
+      description: |
+        The same text this server would put in front of its own model: the
+        pool, the readings scored against it, the derived warnings, the dosing
+        plan, the recent history and the logbook.
+
+        It exists for an agent doing the analysis elsewhere — one with a
+        stronger model than the server can reach. Fetch this, write the
+        analysis, and POST it to `/insight`. Assembling the same picture from
+        the other endpoints would be tedious and would drift out of step with
+        what the local path sees.
+
+        `instructions` is the prompt the local model is held to. Follow it: it
+        carries the dosing-order rule, which is a safety constraint rather than
+        a stylistic one — metal sequestrant always precedes any oxidiser.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The brief, the instructions, and the full test detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  brief:
+                    type: string
+                    description: The assembled context, as plain text.
+                  instructions:
+                    type: string
+                    description: The rules the analysis must follow.
+                  detail: { $ref: "#/components/schemas/TestDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/tests/{id}/insight:
     post:
       tags: [AI]
-      summary: Analyse a test
+      summary: Analyse a test, or file an analysis you wrote
       description: |
-        Reads the test, the computed chemistry, the recent history *and* the
-        logbook, so the analysis can explain why a number moved rather than
-        restate it — connecting a chlorine crash to the stabilizer that washed
-        out, or repeated salt purchases to a suspected leak. The result is
-        stored as an AI note on the test.
+        With **no body**, the server generates the analysis with its own
+        provider chain. It reads the test, the computed chemistry, the recent
+        history *and* the logbook, so it can explain why a number moved rather
+        than restate it — connecting a chlorine crash to the stabilizer that
+        washed out, or repeated salt purchases to a suspected leak.
+
+        With **an analysis in the body**, that analysis is filed as-is and no
+        model is called. This is the hand-off for an agent that did the work
+        itself: fetch `/context`, write the analysis against those
+        instructions, and post it here. The server still validates it, bounds
+        the strings and normalises the severities — an external author is not
+        more trusted for having arrived over HTTP — and records
+        `provider: external` so a reader months later can tell which is which.
+
+        Either way the result is stored as an AI note on the test.
       parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: false
+        description: Omit entirely to have the server generate one.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/Insight"
+                - type: object
+                  properties:
+                    author:
+                      type: string
+                      description: |
+                        What wrote it, for the note's byline — "claude-opus-4.6
+                        via Claude Code". A claim, not a credential, and shown
+                        as one.
       responses:
         "201":
           description: The analysis, and the note it was filed as.

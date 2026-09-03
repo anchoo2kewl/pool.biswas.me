@@ -132,6 +132,11 @@ Respond with JSON only, no markdown fence, matching exactly:
   "watch": ["what to re-test and when"]
 }`
 
+// AnalysisPrompt returns the instructions the analysis is written under, so an
+// agent writing one elsewhere is held to the same rules — including the dosing
+// order, which is a safety rule rather than a stylistic one.
+func AnalysisPrompt() string { return analysisPrompt }
+
 // Analyse asks the model to interpret a test. The prompt is assembled by the
 // caller, so this package stays free of the app's domain types.
 func (s *Service) Analyse(ctx context.Context, userPrompt string) (*Insight, error) {
@@ -156,20 +161,63 @@ func (s *Service) Analyse(ctx context.Context, userPrompt string) (*Insight, err
 	if err := goai.ExtractJSON(resp.Text, &in); err != nil {
 		return nil, fmt.Errorf("the model did not return a usable analysis: %w", err)
 	}
-	if in.Headline == "" && in.Summary == "" && len(in.Findings) == 0 {
-		return nil, fmt.Errorf("the model returned an empty analysis")
+	if err := in.Normalise(); err != nil {
+		return nil, err
 	}
-	for i := range in.Findings {
-		switch in.Findings[i].Severity {
+	in.Model, in.Provider = resp.Model, resp.Provider
+	return &in, nil
+}
+
+// Normalise tidies an analysis and rejects an empty one.
+//
+// It runs over an analysis written anywhere — by the chain above, or handed in
+// by an agent that did the reading itself. An external author is not more
+// trusted than a local one just because it arrived over HTTP, and the
+// interface renders severities directly.
+func (in *Insight) Normalise() error {
+	in.Headline = trimTo(in.Headline, 200)
+	in.Summary = trimTo(in.Summary, 2000)
+
+	findings := in.Findings[:0]
+	for _, f := range in.Findings {
+		f.Title = trimTo(f.Title, 120)
+		f.Detail = trimTo(f.Detail, 1200)
+		if f.Title == "" && f.Detail == "" {
+			continue
+		}
+		switch f.Severity {
 		case "good", "warning", "serious":
 		default:
 			// An unrecognised severity is rendered as a warning rather than
 			// dropped: the observation may still be worth reading.
-			in.Findings[i].Severity = "warning"
+			f.Severity = "warning"
+		}
+		findings = append(findings, f)
+		if len(findings) == 20 {
+			break
 		}
 	}
-	in.Model, in.Provider = resp.Model, resp.Provider
-	return &in, nil
+	in.Findings = findings
+	in.Actions = trimList(in.Actions, 20, 500)
+	in.Watch = trimList(in.Watch, 20, 500)
+
+	if in.Headline == "" && in.Summary == "" && len(in.Findings) == 0 {
+		return fmt.Errorf("the analysis is empty")
+	}
+	return nil
+}
+
+func trimList(in []string, max, width int) []string {
+	out := in[:0]
+	for _, v := range in {
+		if v = trimTo(v, width); v != "" {
+			out = append(out, v)
+		}
+		if len(out) == max {
+			break
+		}
+	}
+	return out
 }
 
 func trimTo(s string, n int) string {
