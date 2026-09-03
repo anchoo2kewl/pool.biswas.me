@@ -2,13 +2,17 @@ package api
 
 import (
 	"context"
-	"errors"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	gologin "github.com/anchoo2kewl/go-login"
 	"github.com/biswas-dev/pool/internal/auth"
+
 	"github.com/biswas-dev/pool/internal/config"
 	"github.com/biswas-dev/pool/internal/demo"
 	"github.com/biswas-dev/pool/internal/store"
@@ -199,129 +203,124 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u *store.U
 
 // ── OAuth ────────────────────────────────────────────────────────────────
 
-func (s *Server) provider(name string) *auth.Provider {
-	switch name {
-	case "github":
-		if s.Cfg.GitHubEnabled() {
-			return auth.GitHub(s.Cfg.GitHubClientID, s.Cfg.GitHubClientSecret)
-		}
-	case "google":
-		if s.Cfg.GoogleEnabled() {
-			return auth.Google(s.Cfg.GoogleClientID, s.Cfg.GoogleClientSecret)
+// oauthHandler builds the go-login handler, or nil when no provider is
+// configured.
+//
+// go-login owns the whole OAuth flow now — signed state, the token exchange,
+// the profile fetch, and resolving or creating the account through
+// gologinStore. This app previously carried its own copy of all of that, and
+// two implementations of the same protocol across two apps is one more than
+// anybody wants to keep correct.
+func (s *Server) oauthHandler() *gologin.Handler {
+	if s.oauth != nil {
+		return s.oauth
+	}
+	if !s.Cfg.GoogleEnabled() && !s.Cfg.GitHubEnabled() {
+		return nil
+	}
+
+	cfg := &gologin.Config{
+		// go-login finishes by redirecting here with a short-lived JWT. Pool
+		// exchanges it for its own session immediately, because a server-side
+		// session can be revoked and a JWT cannot — that is worth keeping.
+		SuccessURL:  s.Cfg.AppURL + "/auth/session",
+		ErrorURL:    s.Cfg.AppURL + "/login",
+		StateSecret: s.Cfg.OAuthStateSecret,
+		// Derived rather than reused. go-login refuses to start if these two
+		// match, and it is right to: a state token that could be presented as
+		// an access token would turn the CSRF defence into a way in. One
+		// configured secret, two keys, separated by their labels.
+		JWTSecret: deriveKey(s.Cfg.OAuthStateSecret, "pool/gologin/jwt"),
+		// Only long enough to survive the redirect back.
+		JWTExpiry: 5 * time.Minute,
+	}
+	if s.Cfg.GoogleEnabled() {
+		cfg.Google = &gologin.OAuthProviderConfig{
+			ClientID:     s.Cfg.GoogleClientID,
+			ClientSecret: s.Cfg.GoogleClientSecret,
+			RedirectURL:  s.Cfg.AppURL + "/auth/google/callback",
 		}
 	}
-	return nil
-}
+	if s.Cfg.GitHubEnabled() {
+		cfg.GitHub = &gologin.OAuthProviderConfig{
+			ClientID:     s.Cfg.GitHubClientID,
+			ClientSecret: s.Cfg.GitHubClientSecret,
+			RedirectURL:  s.Cfg.AppURL + "/auth/github/callback",
+		}
+	}
 
-func (s *Server) redirectURI(name string) string {
-	return s.Cfg.AppURL + "/auth/" + name + "/callback"
+	h, err := gologin.NewHandler(cfg, gologinStore{s})
+	if err != nil {
+		log.Printf("oauth: %v", err)
+		return nil
+	}
+	s.oauth = h
+	return h
 }
 
 func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("provider")
-	p := s.provider(name)
-	if p == nil {
-		http.Error(w, "sign-in with "+name+" is not configured", http.StatusNotFound)
+	h := s.oauthHandler()
+	if h == nil {
+		http.Error(w, "sign-in with that provider is not configured", http.StatusNotFound)
 		return
 	}
-
-	nonce := auth.NewNonce()
-	http.SetCookie(w, &http.Cookie{
-		Name: "oauth_nonce", Value: nonce, Path: "/", MaxAge: 600,
-		HttpOnly: true, Secure: s.Cfg.SecureCookies, SameSite: http.SameSiteLaxMode,
-	})
-	http.Redirect(w, r, p.AuthCodeURL(s.redirectURI(name), auth.SignState(s.Cfg.OAuthStateSecret, nonce)), http.StatusFound)
+	switch r.PathValue("provider") {
+	case "google":
+		h.HandleGoogleInitiate(w, r)
+	case "github":
+		h.HandleGithubInitiate(w, r)
+	default:
+		http.Error(w, "unknown provider", http.StatusNotFound)
+	}
 }
 
 func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("provider")
-	p := s.provider(name)
-	if p == nil {
-		http.Error(w, "sign-in with "+name+" is not configured", http.StatusNotFound)
+	h := s.oauthHandler()
+	if h == nil {
+		http.Error(w, "sign-in with that provider is not configured", http.StatusNotFound)
 		return
 	}
+	switch r.PathValue("provider") {
+	case "google":
+		h.HandleGoogleCallback(w, r)
+	case "github":
+		h.HandleGithubCallback(w, r)
+	default:
+		http.Error(w, "unknown provider", http.StatusNotFound)
+	}
+}
 
+// handleOAuthSession turns go-login's token into a pool session.
+//
+// This is the seam between the two models. go-login hands back a JWT, which is
+// fine for the two seconds it spends in a redirect but is not what this app
+// wants people carrying around: a session row can be listed, expired and
+// revoked, and the whole front end already speaks cookies. So the token is
+// spent here, once, and never reaches the client.
+func (s *Server) handleOAuthSession(w http.ResponseWriter, r *http.Request) {
 	fail := func(msg string) {
-		log.Printf("oauth %s: %s", name, msg)
+		log.Printf("oauth session: %s", msg)
 		http.Redirect(w, r, "/login?error="+urlEncode(msg), http.StatusFound)
 	}
 
-	if e := r.URL.Query().Get("error"); e != "" {
-		fail("sign-in was cancelled")
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		fail("sign-in did not complete, please try again")
 		return
 	}
-	nonceCookie, err := r.Cookie("oauth_nonce")
+	claims, err := gologin.ValidateToken(token, deriveKey(s.Cfg.OAuthStateSecret, "pool/gologin/jwt"))
 	if err != nil {
-		fail("sign-in expired, please try again")
-		return
-	}
-	if !auth.VerifyState(s.Cfg.OAuthStateSecret, r.URL.Query().Get("state"), nonceCookie.Value) {
 		fail("sign-in could not be verified, please try again")
 		return
 	}
-	// The nonce is single-use.
-	http.SetCookie(w, &http.Cookie{Name: "oauth_nonce", Value: "", Path: "/", MaxAge: -1})
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	token, err := p.Exchange(ctx, r.URL.Query().Get("code"), s.redirectURI(name))
+	user, err := s.DB.UserByID(claims.UserID)
 	if err != nil {
-		fail("could not complete sign-in with " + name)
-		return
-	}
-	id, err := p.Identity(ctx, token)
-	if err != nil {
-		fail(err.Error())
+		fail("that account is no longer available")
 		return
 	}
 
-	user, err := s.linkOrCreateUser(id)
-	if err != nil {
-		fail(err.Error())
-		return
-	}
 	s.startSession(w, r, user)
 	http.Redirect(w, r, "/app", http.StatusFound)
-}
-
-// linkOrCreateUser resolves an OAuth identity to an account: an existing link,
-// then a matching verified email, then a brand-new account.
-func (s *Server) linkOrCreateUser(id *auth.Identity) (*store.User, error) {
-	if u, err := s.DB.UserByIdentity(id.Provider, id.UID); err == nil {
-		s.DB.LinkIdentity(id.Provider, id.UID, u.ID, id.Email, id.AvatarURL)
-		return u, nil
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return nil, err
-	}
-
-	// An existing password account with the same verified email adopts this
-	// identity, so a user who signed up with email can later use Google.
-	if u, err := s.DB.UserByEmail(id.Email); err == nil {
-		if err := s.DB.LinkIdentity(id.Provider, id.UID, u.ID, id.Email, id.AvatarURL); err != nil {
-			return nil, err
-		}
-		return u, nil
-	}
-
-	if s.Cfg.Registration == config.RegistrationClosed {
-		return nil, errors.New("registration is closed")
-	}
-
-	role := "member"
-	if n, err := s.DB.CountUsers(); err == nil && n == 0 {
-		role = "admin"
-	}
-	// OAuth accounts have no password; the column is not nullable, so store a
-	// value that no password hash can ever equal.
-	u, err := s.DB.CreateUser(id.Email, id.Name, "", role)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.DB.LinkIdentity(id.Provider, id.UID, u.ID, id.Email, id.AvatarURL); err != nil {
-		return nil, err
-	}
-	return u, nil
 }
 
 func urlEncode(s string) string {
@@ -407,4 +406,17 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// deriveKey produces a distinct key from one configured secret.
+//
+// HMAC with a label gives domain separation: the same secret yields unrelated
+// keys for unrelated purposes, so a token signed for one can never be verified
+// as the other. That is what lets this app hold a single OAuth secret in its
+// configuration and still satisfy go-login's insistence that the state key and
+// the signing key differ.
+func deriveKey(secret, label string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(label))
+	return hex.EncodeToString(mac.Sum(nil))
 }

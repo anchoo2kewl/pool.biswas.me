@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	gologin "github.com/anchoo2kewl/go-login"
 	"io/fs"
 	"log"
 	"net/http"
@@ -27,6 +28,9 @@ import (
 
 // Server holds the dependencies shared by every handler.
 type Server struct {
+	// oauth is the go-login handler, built on first use because it depends on
+	// configuration that is only complete once the server exists.
+	oauth  *gologin.Handler
 	DB     *store.DB
 	Cfg    *config.Config
 	Static fs.FS
@@ -107,6 +111,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/demo", s.handleDemoLogin)
 	mux.HandleFunc("GET /auth/{provider}/start", s.handleOAuthStart)
 	mux.HandleFunc("GET /auth/{provider}/callback", s.handleOAuthCallback)
+	// Where go-login lands; pool swaps its token for a session here.
+	mux.HandleFunc("GET /auth/session", s.handleOAuthSession)
 
 	// ── Authenticated: session cookie or API key ──────────────────────────
 	authed := func(h http.HandlerFunc) http.Handler { return s.requireAuth(h) }

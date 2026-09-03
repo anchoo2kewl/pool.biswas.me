@@ -3,7 +3,6 @@
 package auth
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -105,28 +104,11 @@ func NewInviteCode() string {
 	return string(out[:5]) + "-" + string(out[5:])
 }
 
-// SignState produces an HMAC-signed OAuth state value carrying a nonce.
-func SignState(secret, nonce string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(nonce))
-	return nonce + "." + hex.EncodeToString(mac.Sum(nil))
-}
-
-// VerifyState checks a state value against the nonce stored in the cookie.
-func VerifyState(secret, state, nonce string) bool {
-	parts := strings.SplitN(state, ".", 2)
-	if len(parts) != 2 || parts[0] != nonce {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(nonce))
-	want := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(parts[1]), []byte(want))
-}
-
-// NewNonce returns a random value for OAuth state.
-func NewNonce() string { return randomToken(16) }
-
+// randomToken returns n bytes of randomness, URL-safe base64 encoded.
+//
+// Panics rather than returning an error: every caller wants a token, none has
+// a sensible fallback, and a machine that cannot produce randomness must not
+// go on issuing session tokens.
 func randomToken(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {

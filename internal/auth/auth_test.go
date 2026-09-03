@@ -71,28 +71,6 @@ func TestHashAPIKeyIsStableSHA256(t *testing.T) {
 	}
 }
 
-func TestOAuthStateVerification(t *testing.T) {
-	const secret = "test-secret"
-	nonce := NewNonce()
-	state := SignState(secret, nonce)
-
-	if !VerifyState(secret, state, nonce) {
-		t.Error("a freshly signed state failed verification")
-	}
-	if VerifyState(secret, state, "different-nonce") {
-		t.Error("state verified against the wrong nonce — CSRF protection is broken")
-	}
-	if VerifyState("other-secret", state, nonce) {
-		t.Error("state verified under a different secret — the signature is not checked")
-	}
-	if VerifyState(secret, nonce+".deadbeef", nonce) {
-		t.Error("a forged signature verified")
-	}
-	if VerifyState(secret, "garbage", nonce) {
-		t.Error("a malformed state verified")
-	}
-}
-
 func TestInviteCodeIsUnambiguous(t *testing.T) {
 	// The alphabet omits I, L, O and U so a handwritten code cannot be misread.
 	for i := 0; i < 100; i++ {
