@@ -85,6 +85,7 @@ func (s *Server) handleCreateTestFromPhoto(w http.ResponseWriter, r *http.Reques
 		Notes:       r.FormValue("notes"),
 		Hint:        r.FormValue("hint"),
 		Analyse:     !isFalse(r.FormValue("analyse")),
+		DryRun:      isTrue(r.FormValue("dry_run")),
 	}
 
 	read, err := svc.ReadTestSheet(ctx, img.Data, img.ContentType, in.Hint)
@@ -96,6 +97,11 @@ func (s *Server) handleCreateTestFromPhoto(w http.ResponseWriter, r *http.Reques
 		// Nothing has been written yet, so an unreadable photo costs the
 		// caller a retry and nothing else.
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	if in.DryRun {
+		writeJSON(w, http.StatusOK, map[string]any{"parsed": read, "pool": pool})
 		return
 	}
 
@@ -151,6 +157,7 @@ func (s *Server) handleParseAttachment(w http.ResponseWriter, r *http.Request) {
 		Notes       string `json:"notes"`
 		Hint        string `json:"hint"`
 		Analyse     *bool  `json:"analyse"`
+		DryRun      bool   `json:"dry_run"`
 	}
 	// A bare POST with no body is the common case from the interface, so an
 	// empty request is not an error.
@@ -162,7 +169,9 @@ func (s *Server) handleParseAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	in := sheetOverrides{
 		TestedAt: req.TestedAt, CompanyName: req.CompanyName,
-		Notes: req.Notes, Hint: req.Hint, Analyse: req.Analyse == nil || *req.Analyse,
+		Notes: req.Notes, Hint: req.Hint,
+		Analyse: req.Analyse == nil || *req.Analyse,
+		DryRun:  req.DryRun,
 	}
 
 	// A vision model needs an image. A PDF invoice is a perfectly good
@@ -207,6 +216,11 @@ func (s *Server) handleParseAttachment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	if in.DryRun {
+		writeJSON(w, http.StatusOK, map[string]any{"parsed": read, "pool": pool, "attachment": rec})
 		return
 	}
 
@@ -280,6 +294,16 @@ type sheetOverrides struct {
 	Notes       string
 	Hint        string
 	Analyse     bool
+	// DryRun reads the sheet and returns what it found without storing
+	// anything.
+	//
+	// It exists because a transcription is a model's reading of a photograph,
+	// not a measurement. Where the model is reliable, storing it directly is
+	// the fastest path; where it is not, writing a misread hardness straight
+	// into the log produces a confident dose recommendation from a number
+	// nobody checked. A dry run lets the interface fill the form in and put a
+	// person between the two.
+	DryRun bool
 }
 
 func (s *Server) testFromReading(u *store.User, pool *store.Pool, in sheetOverrides, read *ai.SheetReading) (*store.Test, error) {
@@ -441,6 +465,15 @@ func readUpload(r io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w (limit %d bytes)", gophoto.ErrTooLarge, limit)
 	}
 	return raw, nil
+}
+
+// isTrue reads the on switch on a form field that defaults to off.
+func isTrue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // isFalse reads the off switch on a form field that defaults to on.

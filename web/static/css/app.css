@@ -641,3 +641,11 @@ code:not(pre code) { background: rgba(255,255,255,0.08); padding: 0.12em 0.4em; 
   .glass, .btn, .reading { border: 1px solid CanvasText; background: Canvas; }
   .glass::before { display: none; }
 }
+
+/* A field filled in from a photographed sheet. Marked so the eye goes to what
+   a model read rather than what a person typed — these are the numbers worth
+   checking against the paper before saving. */
+input[data-from-sheet] {
+  border-color: rgba(103, 232, 209, 0.45);
+  background: rgba(103, 232, 209, 0.06);
+}

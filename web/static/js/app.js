@@ -995,27 +995,38 @@ const TEST_FIELDS = [
   { key: 'bromine', label: 'Bromine', unit: 'ppm', step: '0.01' },
 ];
 
-function openTestForm() {
-  modal('Add a water test', `
+function openTestForm(parsed, photo) {
+  const read = (parsed && parsed.values) || {};
+  const val = key => (read[key] === undefined || read[key] === null ? '' : read[key]);
+  modal(parsed ? 'Check the readings from the sheet' : 'Add a water test', `
     <div class="stack" style="gap:.85rem">
       <div class="grid grid-2" style="gap:.75rem">
         <div class="field"><label for="t-date">Date tested</label>
-          <input id="t-date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
+          <input id="t-date" type="date" value="${escapeHtml((parsed && parsed.tested_at) || new Date().toISOString().slice(0, 10))}"></div>
         <div class="field"><label for="t-company">Tested by (optional)</label>
-          <input id="t-company" placeholder="Jameson Pool & Spa, or your own name"></div>
+          <input id="t-company" placeholder="Jameson Pool & Spa, or your own name"
+            value="${escapeHtml((parsed && parsed.company) || '')}"></div>
       </div>
-      <p class="small dim" style="margin:0">Fill in whatever you have — every field is optional. A strip test with three numbers still produces a full analysis.</p>
+      ${parsed ? `<div class="glass card" style="padding:.6rem">
+        <p class="small" style="margin:0"><strong>Read from your photo${parsed.model ? ` by ${escapeHtml(parsed.model)}` : ''}.</strong>
+          Nothing has been saved yet. Check each number against the sheet — a transcription is a reading of a
+          photograph, and the fields it left blank were marked N/T or could not be read.</p>
+        ${parsed.notes ? `<p class="small dim" style="margin:.4rem 0 0">${escapeHtml(parsed.notes)}</p>` : ''}
+        ${(parsed.rejected || []).length ? `<p class="small dim" style="margin:.4rem 0 0">Discarded as impossible:
+          <span class="mono">${parsed.rejected.map(escapeHtml).join(', ')}</span></p>` : ''}
+      </div>` : '<p class="small dim" style="margin:0">Fill in whatever you have — every field is optional. A strip test with three numbers still produces a full analysis.</p>'}
       <div class="grid grid-2" style="gap:.75rem">
         ${TEST_FIELDS.map(f => `
           <div class="field">
             <label for="t-${f.key}">${f.label}${f.unit ? ` <span class="dim">(${f.unit})</span>` : ''}</label>
-            <input id="t-${f.key}" type="number" step="${f.step}" inputmode="decimal" placeholder="—">
+            <input id="t-${f.key}" type="number" step="${f.step}" inputmode="decimal" placeholder="—"
+              value="${val(f.key)}" ${parsed && val(f.key) !== '' ? 'data-from-sheet="1"' : ''}>
             ${f.hint ? `<span class="hint">${f.hint}</span>` : ''}
           </div>`).join('')}
       </div>
       <div class="field"><label for="t-notes">Notes (optional)</label>
         <textarea id="t-notes" placeholder="Water was cloudy after the storm…"></textarea></div>
-      <button class="btn btn-primary btn-block" id="save-test">Save test</button>
+      <button class="btn btn-primary btn-block" id="save-test">${parsed ? 'Save this test' : 'Save test'}</button>
     </div>`, (body, close) => {
     $('#save-test', body).addEventListener('click', async () => {
       const payload = { pool_id: state.pool.id, tested_at: $('#t-date', body).value };
@@ -1032,7 +1043,17 @@ function openTestForm() {
       if (!hasReading) return toast('Enter at least one reading', 'err');
 
       try {
-        await api.createTest(payload);
+        const detail = await api.createTest(payload);
+        // The sheet belongs with the test it produced, so it is uploaded once
+        // the readings have actually been accepted rather than before.
+        if (photo && detail && detail.test) {
+          const sheet = new FormData();
+          sheet.append('file', photo);
+          sheet.append('pool_id', state.pool.id);
+          sheet.append('test_id', detail.test.id);
+          sheet.append('kind', 'test_sheet');
+          api.upload('/api/attachments', sheet).catch(() => toast('The test was saved, but the photo could not be attached', 'err'));
+        }
         close();
         toast('Test saved', 'ok');
         state.tests = []; state.trends = null;
@@ -1069,9 +1090,14 @@ function openPhotoTestForm() {
       </div>
       <div class="field"><label for="p-hint">Anything the photo does not say (optional)</label>
         <input id="p-hint" placeholder="The salt row is smudged"></div>
-      <label class="small" style="display:flex;align-items:center;gap:.5rem">
-        <input id="p-analyse" type="checkbox" checked> Run the AI analysis straight away
-      </label>
+      <div class="field">
+        <label for="p-mode">What should happen next?</label>
+        <select id="p-mode">
+          <option value="review">Fill the form in and let me check it first</option>
+          <option value="store">Save it as a test straight away, and analyse it</option>
+        </select>
+        <span class="hint">A transcription is a model reading a photograph, not a measurement — checking twenty numbers against the sheet is quicker than typing them.</span>
+      </div>
       <button class="btn btn-primary btn-block" id="p-go">Read the sheet</button>
     </div>`, (body, close) => {
     const fileInput = $('#p-file', body);
@@ -1094,10 +1120,12 @@ function openPhotoTestForm() {
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span> Reading the sheet…';
 
+      const review = $('#p-mode', body).value === 'review';
       const form = new FormData();
       form.append('file', file);
       form.append('pool_id', state.pool.id);
-      form.append('analyse', $('#p-analyse', body).checked ? 'true' : 'false');
+      form.append('analyse', review ? 'false' : 'true');
+      if (review) form.append('dry_run', 'true');
       const date = $('#p-date', body).value;
       if (date) form.append('tested_at', date);
       const company = $('#p-company', body).value.trim();
@@ -1106,8 +1134,15 @@ function openPhotoTestForm() {
       if (hint) form.append('hint', hint);
 
       try {
-        const detail = await api.createTestFromPhoto(form);
-        renderPhotoResult(body, detail, close);
+        const result = await api.createTestFromPhoto(form);
+        if (review) {
+          // Nothing was stored: hand the readings to the ordinary test form
+          // so they are checked against the paper before they become a test.
+          close();
+          openTestForm(result.parsed, file);
+          return;
+        }
+        renderPhotoResult(body, result, close);
         state.tests = []; state.trends = null;
         loadPool();
       } catch (e) {

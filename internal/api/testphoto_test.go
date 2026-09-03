@@ -98,3 +98,18 @@ func TestIsFalse(t *testing.T) {
 		}
 	}
 }
+
+func TestIsTrueIsOffByDefault(t *testing.T) {
+	for _, on := range []string{"true", "1", "yes", "ON", " true "} {
+		if !isTrue(on) {
+			t.Errorf("isTrue(%q) = false, want true", on)
+		}
+	}
+	// A dry run has to be asked for. Anything unrecognised — including the
+	// empty string — stores the test, which is the documented default.
+	for _, off := range []string{"", "false", "0", "no", "maybe"} {
+		if isTrue(off) {
+			t.Errorf("isTrue(%q) = true, want false", off)
+		}
+	}
+}

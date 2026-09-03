@@ -414,6 +414,15 @@ paths:
                   type: string
                   description: Send `false` to store the test without running the analysis.
                   examples: ["false"]
+                dry_run:
+                  type: string
+                  description: |
+                    Send `true` to read the sheet and return what was found
+                    without storing anything. A transcription is a model's
+                    reading of a photograph rather than a measurement, so this
+                    lets a client fill a form in and put a person between the
+                    two. The response is `{parsed, pool}` with status 200.
+                  examples: ["true"]
       responses:
         "201":
           description: The stored test, what was read off the sheet, and the analysis.
@@ -814,6 +823,12 @@ paths:
                   type: boolean
                   default: true
                   description: Send false to store the test without running the analysis.
+                dry_run:
+                  type: boolean
+                  default: false
+                  description: |
+                    Read the sheet and return what was found without storing
+                    anything. Responds 200 with `{parsed, pool, attachment}`.
       responses:
         "201":
           description: The stored test, what was read off the sheet, and the analysis.
