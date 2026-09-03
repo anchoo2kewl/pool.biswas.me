@@ -32,6 +32,9 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 		"ai_enabled":     s.Cfg.AIEnabled(),
 		"env":            s.Cfg.Env,
 		"demo_enabled":   s.Cfg.DemoEnabled,
+		// The sign-in page offers a password reset only when there is a
+		// gateway to send one through.
+		"password_reset_enabled": s.Cfg.MailEnabled(),
 		// Published on purpose: this is the point of a demo account.
 		"demo_email":    s.Cfg.DemoEmail,
 		"demo_password": s.Cfg.DemoPassword,
@@ -335,12 +338,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":      u,
 		"providers": providers,
-		"ai": map[string]any{
-			"configured":    u.AIAPIKey != "" || s.Cfg.AIEnabled(),
-			"using_own_key": u.AIAPIKey != "",
-			"model":         firstNonEmpty(u.AIModel, s.Cfg.AIModel),
-			"base_url":      firstNonEmpty(u.AIBaseURL, s.Cfg.AIBaseURL),
-		},
+		"ai":        s.aiStatus(u),
 	})
 }
 
@@ -397,6 +395,53 @@ func (s *Server) handleSetAISettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// aiStatus describes what AI this account actually has, which is what the
+// interface uses to decide whether to offer the buttons at all.
+//
+// It has to agree with aiService, or the page says one thing and the endpoint
+// does another: an account with its own provider slots is configured even
+// though the legacy single-key fields are empty, and the operator's chain
+// counts only where it is shared.
+func (s *Server) aiStatus(u *store.User) map[string]any {
+	slots, err := s.DB.AIChainSlots(u.ID)
+	if err != nil {
+		log.Printf("read ai providers for user %d: %v", u.ID, err)
+	}
+
+	ownChain := 0
+	model, base := "", ""
+	for _, p := range slots {
+		if p.APIKey == "" {
+			continue
+		}
+		ownChain++
+		if model == "" && p.Kind == store.AIKindText {
+			model, base = p.Model, p.BaseURL
+		}
+	}
+
+	switch {
+	case ownChain > 0:
+		return map[string]any{
+			"configured": true, "using_own_key": true, "slots": ownChain,
+			"model": model, "base_url": firstNonEmpty(base, s.Cfg.AIBaseURL),
+		}
+	case u.AIAPIKey != "":
+		// The single endpoint this app shipped with, still honoured.
+		return map[string]any{
+			"configured": true, "using_own_key": true, "slots": 1,
+			"model":    firstNonEmpty(u.AIModel, s.Cfg.AIModel),
+			"base_url": firstNonEmpty(u.AIBaseURL, s.Cfg.AIBaseURL),
+		}
+	case s.AI.Enabled() && (s.Cfg.AISharedKey || u.Role == "admin"):
+		return map[string]any{
+			"configured": true, "using_own_key": false, "slots": 0,
+			"model": s.Cfg.AIModel, "base_url": s.Cfg.AIBaseURL,
+		}
+	}
+	return map[string]any{"configured": false, "using_own_key": false, "slots": 0}
 }
 
 func firstNonEmpty(vals ...string) string {

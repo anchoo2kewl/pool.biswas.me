@@ -581,6 +581,21 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-fam
 .note .body { font-size: 0.88rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .note .body strong { color: var(--fg); font-weight: 640; }
 
+/* A long analysis is collapsed rather than allowed to set the height of the
+   whole page. The fade says there is more without needing a label to. */
+.note .body.clamped {
+  max-height: 340px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 74%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 74%, transparent 100%);
+}
+.note-more { margin-top: 0.35rem; padding-left: 0; color: var(--accent); }
+
+/* The two columns of the overview keep their own rhythm: cards in a column
+   are evenly spaced, and a column that runs out of content stops rather than
+   stretching its last card to meet the other one. */
+.overview-split > .stack { align-content: start; }
+
 .alert-item { display: flex; gap: 0.65rem; padding: 0.75rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
 .alert-item:last-child { border-bottom: none; }
 .alert-item .ico { flex-shrink: 0; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; font-size: 0.7rem; font-weight: 700; margin-top: 1px; }

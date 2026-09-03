@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choose a new password · Pool</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css?v=__BUILD__">
+</head>
+<body>
+
+<div class="shell" style="max-width:420px;margin:4rem auto">
+  <div class="glass card card-pad-lg">
+    <h1 style="font-size:1.5rem;margin-bottom:.25rem">Choose a new password</h1>
+    <p class="small muted" id="intro">The link is good for one hour and works once.</p>
+
+    <div class="alert hidden" id="error" style="margin-bottom:.75rem"></div>
+
+    <form id="form" class="stack" style="gap:.85rem">
+      <div class="field">
+        <label for="password">New password</label>
+        <input id="password" type="password" autocomplete="new-password" required
+               minlength="8" placeholder="••••••••">
+        <span class="hint">At least 8 characters.</span>
+      </div>
+      <div class="field">
+        <label for="confirm">Repeat it</label>
+        <input id="confirm" type="password" autocomplete="new-password" required placeholder="••••••••">
+      </div>
+      <button class="btn btn-primary btn-block" type="submit" id="submit">Set the new password</button>
+    </form>
+
+    <p class="small dim" style="margin-top:1rem"><a href="/login">Back to sign in</a></p>
+  </div>
+</div>
+
+<script type="module">
+import { api } from '/js/api.js?v=__BUILD__';
+
+const $ = s => document.querySelector(s);
+const token = new URLSearchParams(window.location.search).get('token') || '';
+
+function showError(msg) {
+  const e = $('#error');
+  e.textContent = msg;
+  e.classList.remove('hidden');
+}
+
+// A missing token means the link was mangled in transit, which is worth saying
+// before somebody types a password into a form that cannot work.
+if (!token) {
+  $('#form').style.display = 'none';
+  showError('This link is missing its token. Ask for a new reset link from the sign-in page.');
+}
+
+$('#form').addEventListener('submit', async e => {
+  e.preventDefault();
+  if ($('#password').value !== $('#confirm').value) {
+    showError('Those two passwords do not match.');
+    return;
+  }
+  const btn = $('#submit');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    const res = await api.post('/api/auth/reset', { token, password: $('#password').value });
+    $('#form').style.display = 'none';
+    $('#error').classList.add('hidden');
+    $('#intro').innerHTML = `${res.message} <a href="/login">Sign in</a>.`;
+  } catch (err) {
+    showError(err.message);
+    btn.disabled = false;
+    btn.textContent = 'Set the new password';
+  }
+});
+</script>
+</body>
+</html>

@@ -65,6 +65,9 @@
         <label for="password">Password</label>
         <input id="password" type="password" autocomplete="current-password" required placeholder="••••••••">
         <span class="hint" id="pw-hint" style="display:none">At least 8 characters.</span>
+        <span class="hint" id="forgot-row" style="display:none">
+          <a href="#" id="forgot">Forgotten your password?</a>
+        </span>
       </div>
       <div class="field" id="invite-field" style="display:none">
         <label for="invite">Invite code</label>
@@ -78,7 +81,7 @@
 </div>
 
 <script type="module">
-import { api, toast } from '/js/api.js';
+import { api, toast } from '/js/api.js?v=__BUILD__';
 
 let mode = 'login';
 let config = {};
@@ -144,6 +147,8 @@ function setMode(next) {
   $('#name-field').style.display = registering ? '' : 'none';
   $('#pw-hint').style.display = registering ? '' : 'none';
   $('#password').setAttribute('autocomplete', registering ? 'new-password' : 'current-password');
+  const forgotRow = document.querySelector('#forgot-row');
+  if (forgotRow && config.password_reset_enabled) forgotRow.style.display = registering ? 'none' : '';
   $('#invite-field').style.display = registering && config.registration === 'invite' ? '' : 'none';
   $('#error').classList.add('hidden');
 
@@ -184,8 +189,35 @@ $('#form').addEventListener('submit', async e => {
   }
 });
 
+/* Asking for a reset link. The reply is the same whether or not the address
+ * has an account, so this says the same thing either way — anything else would
+ * turn the form into a way to ask who is registered. */
+function wireForgot() {
+  const row = document.querySelector('#forgot-row');
+  if (!config.password_reset_enabled) return;
+  row.style.display = '';
+  document.querySelector('#forgot').addEventListener('click', async e => {
+    e.preventDefault();
+    const email = $('#email').value.trim();
+    if (!email) {
+      showError('Enter your email address first, then ask for a reset link.');
+      $('#email').focus();
+      return;
+    }
+    row.innerHTML = '<span class="dim">Sending…</span>';
+    try {
+      const res = await api.post('/api/auth/forgot', { email });
+      row.innerHTML = `<span class="dim">${res.message}</span>`;
+    } catch (err) {
+      row.innerHTML = '';
+      showError(err.message);
+    }
+  });
+}
+
 (async () => {
   try { config = await api.config(); } catch { config = {}; }
+  wireForgot();
   renderOAuth();
   renderDemo();
   const params = new URLSearchParams(window.location.search);

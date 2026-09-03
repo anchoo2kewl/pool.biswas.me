@@ -226,6 +226,14 @@ function renderOverview(root) {
           </div>
           <div class="readings">${readings.map(readingTile).join('')}</div>
         </div>
+
+        <div class="glass card">
+          <div class="card-head">
+            <h3>Notes &amp; analysis</h3>
+            ${state.ai?.configured ? '' : '<span class="pill pill-unknown"><span class="dot"></span>AI not configured</span>'}
+          </div>
+          <div id="ai-panel"></div>
+        </div>
       </div>
 
       <div class="stack">
@@ -245,14 +253,6 @@ function renderOverview(root) {
             ${pending ? `<span class="pill pill-warning"><span class="dot"></span>${pending} to do</span>` : '<span class="pill pill-good"><span class="dot"></span>All done</span>'}
           </div>
           <div id="treatments"></div>
-        </div>
-
-        <div class="glass card">
-          <div class="card-head">
-            <h3>Notes &amp; analysis</h3>
-            ${state.ai?.configured ? '' : '<span class="pill pill-unknown"><span class="dot"></span>AI not configured</span>'}
-          </div>
-          <div id="ai-panel"></div>
         </div>
 
         <div class="glass card">
@@ -395,6 +395,8 @@ function renderNotesPanel(el, test) {
     }
   });
 
+  clampLongNotes(el);
+
   $$('[data-del-note]', el).forEach(b => b.addEventListener('click', async () => {
     if (!confirm('Delete this note?')) return;
     try {
@@ -483,8 +485,32 @@ function renderNote(n) {
       <div class="spacer"></div>
       <button class="btn btn-sm btn-ghost btn-danger" data-del-note="${n.id}" title="Delete note" style="min-height:24px;padding:0 .4rem">×</button>
     </div>
-    <div class="body">${markdownish(n.body)}</div>
+    <div class="body clampable">${markdownish(n.body)}</div>
   </div>`;
+}
+
+/* Collapses a note that is taller than the panel it sits in, and gives it a
+ * control to open. Measured after render rather than guessed from the text
+ * length, because the same words wrap differently in a wide column and a
+ * narrow one. */
+const NOTE_CLAMP_PX = 340;
+
+function clampLongNotes(root) {
+  $$('.note .body.clampable', root).forEach(body => {
+    if (body.dataset.clamped) return;
+    if (body.scrollHeight <= NOTE_CLAMP_PX + 60) return; // not worth hiding
+    body.dataset.clamped = 'yes';
+    body.classList.add('clamped');
+
+    const toggle = document.createElement('button');
+    toggle.className = 'btn btn-sm btn-ghost note-more';
+    toggle.textContent = 'Read the full analysis';
+    toggle.addEventListener('click', () => {
+      const open = body.classList.toggle('clamped');
+      toggle.textContent = open ? 'Read the full analysis' : 'Show less';
+    });
+    body.insertAdjacentElement('afterend', toggle);
+  });
 }
 
 /* Just enough markdown for what the model returns: bold and lists. */

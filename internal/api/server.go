@@ -23,6 +23,7 @@ import (
 	"github.com/biswas-dev/pool/internal/api/spec"
 	"github.com/biswas-dev/pool/internal/auth"
 	"github.com/biswas-dev/pool/internal/config"
+	"github.com/biswas-dev/pool/internal/mail"
 	"github.com/biswas-dev/pool/internal/store"
 )
 
@@ -34,6 +35,9 @@ type Server struct {
 	DB     *store.DB
 	Cfg    *config.Config
 	Static fs.FS
+	// Mail sends the password reset. A sender with no gateway configured
+	// reports itself as such, and the feature is hidden rather than broken.
+	Mail *mail.Sender
 	// AI is the server-wide provider chain. A user with their own key gets a
 	// chain of their own instead; see aiService.
 	AI *ai.Service
@@ -81,7 +85,8 @@ func New(db *store.DB, cfg *config.Config, static fs.FS, aiSvc *ai.Service) *Ser
 	if aiSvc == nil {
 		aiSvc = ai.New(nil, nil)
 	}
-	return &Server{DB: db, Cfg: cfg, Static: static, AI: aiSvc}
+	return &Server{DB: db, Cfg: cfg, Static: static, AI: aiSvc,
+		Mail: mail.New(cfg.MailURL, cfg.MailKey, cfg.MailFrom, cfg.MailFromName)}
 }
 
 const sessionCookie = "pool_session"
@@ -109,6 +114,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/auth/demo", s.handleDemoLogin)
+	mux.HandleFunc("POST /api/auth/forgot", s.handleForgotPassword)
+	mux.HandleFunc("POST /api/auth/reset", s.handleResetPassword)
 	mux.HandleFunc("GET /auth/{provider}/start", s.handleOAuthStart)
 	mux.HandleFunc("GET /auth/{provider}/callback", s.handleOAuthCallback)
 	// Where go-login lands; pool swaps its token for a session here.
@@ -355,6 +362,10 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		path = "login.html"
 	case "docs", "docs/", "api", "api/":
 		path = "docs.html"
+	case "reset", "reset/":
+		// Reached from a link in an email, by somebody who is by definition
+		// not signed in.
+		path = "reset.html"
 	}
 
 	f, err := s.Static.Open(path)

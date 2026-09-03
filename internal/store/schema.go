@@ -298,4 +298,21 @@ CREATE TABLE ai_providers (
 );
 CREATE INDEX idx_ai_providers_user ON ai_providers(user_id, kind, slot);
 `},
+
+	{"007_password_resets", `
+-- Single-use password reset tokens.
+--
+-- Only the hash is stored, for the same reason as an API key: a leaked
+-- database yields hashes, and a hash cannot be mailed to anybody. The token
+-- itself exists only in the link that was sent.
+CREATE TABLE password_resets (
+  token_hash  TEXT PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  used_at     TEXT NOT NULL DEFAULT '',
+  requested_ip TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_password_resets_user ON password_resets(user_id, created_at DESC);
+`},
 }

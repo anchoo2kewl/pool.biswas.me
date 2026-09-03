@@ -68,6 +68,13 @@ type Config struct {
 	AISlots       []goai.Slot
 	AIVisionSlots []goai.Slot
 
+	// Mail gateway (go-email). Without one, password reset is offered nowhere
+	// and says so, rather than appearing to work.
+	MailURL      string
+	MailKey      string
+	MailFrom     string
+	MailFromName string
+
 	// AdminEmail/AdminPassword seed the first account on an empty database.
 	AdminEmail    string
 	AdminPassword string
@@ -113,6 +120,11 @@ func Load() *Config {
 		AIModel:       env("POOL_AI_MODEL", "meta/llama-3.2-90b-vision-instruct"),
 		AIVisionModel: env("POOL_AI_VISION_MODEL", ""),
 		AISharedKey:   env("POOL_AI_SHARED", "false") == "true",
+
+		MailURL:      env("POOL_MAIL_URL", ""),
+		MailKey:      env("POOL_MAIL_KEY", ""),
+		MailFrom:     env("POOL_MAIL_FROM", ""),
+		MailFromName: env("POOL_MAIL_FROM_NAME", "Pool"),
 
 		AdminEmail:    env("POOL_ADMIN_EMAIL", ""),
 		AdminPassword: env("POOL_ADMIN_PASSWORD", ""),
@@ -198,6 +210,12 @@ func Slot(baseURL, apiKey, model string) goai.Slot {
 		}
 	}
 	return goai.Slot{Provider: name, BaseURL: baseURL, APIKey: apiKey, Model: model}
+}
+
+// MailEnabled reports whether a mail gateway is configured, which is what
+// decides whether the sign-in page offers a password reset at all.
+func (c *Config) MailEnabled() bool {
+	return c.MailURL != "" && c.MailKey != "" && c.MailFrom != ""
 }
 
 // GitHubEnabled reports whether GitHub sign-in is configured.
