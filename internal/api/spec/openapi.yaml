@@ -31,6 +31,12 @@ info:
     rollups are computed by the server either way. Set `source` on the test to
     say what did the reading.
 
+    **Sign-in.** A password may be backed by a second factor, and an account
+    can register passkeys. `POST /api/auth/login` answers `mfa_required` with a
+    challenge rather than a session when a second factor is on; send the code
+    to `POST /api/auth/mfa`. API keys are unaffected either way — a key is its
+    own credential and carries its own scope.
+
     **Money** is stored in minor units. Endpoints that accept a cost take
     either `cost` in dollars or `cost_cents` as an integer; the integer wins if
     both are sent.
@@ -148,6 +154,282 @@ paths:
                 model: { type: string, examples: ["meta/llama-3.2-90b-vision-instruct"] }
       responses:
         "200": { description: Saved. }
+
+  /api/me/mfa:
+    get:
+      tags: [Account]
+      summary: Second factor and passkeys on this account
+      responses:
+        "200":
+          description: What protects this account beyond its password.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totp:
+                    type: object
+                    properties:
+                      enabled: { type: boolean }
+                      pending:
+                        type: boolean
+                        description: A secret was issued but never proved — setup was abandoned halfway.
+                      recovery_codes_left: { type: integer }
+                      recovery_code_total: { type: integer }
+                  passkeys:
+                    type: array
+                    items: { $ref: "#/components/schemas/Passkey" }
+                  passkeys_enabled:
+                    type: boolean
+                    description: False when the instance is not on a secure origin, where browsers refuse passkeys.
+
+  /api/me/mfa/totp/begin:
+    post:
+      tags: [Account]
+      summary: Start two-factor setup
+      description: |
+        Issues a secret and leaves it unconfirmed. The factor is not on until a
+        code computed from it comes back, so a setup abandoned halfway cannot
+        lock anybody out of their own account.
+      responses:
+        "200":
+          description: The secret, the otpauth URI, and where to fetch the QR.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string, description: Grouped for reading off a screen. }
+                  uri: { type: string, examples: ["otpauth://totp/..."] }
+                  qr_url: { type: string }
+                  digits: { type: integer }
+                  period_s: { type: integer }
+        "409": { description: Already on for this account. }
+
+  /api/me/mfa/totp/qr:
+    get:
+      tags: [Account]
+      summary: The enrolment QR
+      description: |
+        A PNG, served from an authenticated endpoint rather than embedded in
+        the page, so the secret does not end up in page source, browser history
+        or a screenshot of the URL bar. Gone once enrolment is confirmed.
+      responses:
+        "200":
+          description: The code.
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        "404": { description: No enrolment in progress. }
+
+  /api/me/mfa/totp/confirm:
+    post:
+      tags: [Account]
+      summary: Prove the secret arrived and switch the factor on
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, examples: ["123456"] }
+      responses:
+        "200":
+          description: |
+            Enabled, with the recovery codes. They are shown once and never
+            again — they are the way back in when the phone is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+                  recovery_codes: { type: array, items: { type: string } }
+                  message: { type: string }
+        "400": { description: The code did not match. }
+
+  /api/me/mfa/totp/disable:
+    post:
+      tags: [Account]
+      summary: Turn the second factor off
+      description: |
+        Requires the password again. Without that, anybody who found an
+        unlocked browser could quietly remove the protection. The recovery
+        codes go with it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200": { description: Off. }
+        "401": { description: The password was wrong. }
+
+  /api/me/mfa/recovery-codes:
+    post:
+      tags: [Account]
+      summary: Issue a fresh set of recovery codes
+      description: Replaces the current set, which stops working immediately. Requires the password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200":
+          description: The new codes, shown once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recovery_codes: { type: array, items: { type: string } }
+
+  /api/me/passkeys/begin:
+    post:
+      tags: [Account]
+      summary: Start registering a passkey
+      description: |
+        Returns WebAuthn creation options and a challenge token to hand back.
+        Credentials already registered are excluded, so adding the same key
+        twice fails in the browser with a clear message rather than silently.
+      responses:
+        "200":
+          description: Options for navigator.credentials.create.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  challenge: { type: string }
+                  options: { type: object, additionalProperties: true }
+
+  /api/me/passkeys/finish:
+    post:
+      tags: [Account]
+      summary: Record the new passkey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, response]
+              properties:
+                challenge: { type: string }
+                name: { type: string, description: A label, defaulted from the device. }
+                response: { type: object, additionalProperties: true }
+      responses:
+        "201":
+          description: The registered passkey.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Passkey" }
+        "400": { description: The attestation did not verify. }
+        "409": { description: Already registered. }
+
+  /api/me/passkeys/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [Account]
+      summary: Rename a passkey
+      responses:
+        "200": { description: Renamed. }
+    delete:
+      tags: [Account]
+      summary: Remove a passkey
+      responses:
+        "200": { description: Removed. }
+
+  /api/auth/mfa:
+    post:
+      tags: [Account]
+      summary: Finish a sign-in that stopped at the second factor
+      description: |
+        `POST /api/auth/login` answers `mfa_required` with a challenge instead
+        of a session when the account has a second factor. Send the six digits
+        here, or one of the recovery codes — each of those works once.
+
+        The challenge is single use and expires in five minutes, so a
+        half-finished login left on a shared machine is not a standing
+        invitation.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, code]
+              properties:
+                challenge: { type: string }
+                code: { type: string }
+      responses:
+        "200":
+          description: Signed in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { description: Wrong code, or the challenge has been spent. }
+
+  /api/auth/passkey/begin:
+    post:
+      tags: [Account]
+      summary: Start a passwordless sign-in
+      description: |
+        No email is asked for. A discoverable credential carries the user
+        handle, so the browser offers the right passkey and the server learns
+        who it is from the assertion — which also means this endpoint reveals
+        nothing about who has an account here.
+      security: []
+      responses:
+        "200":
+          description: Options for navigator.credentials.get.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  challenge: { type: string }
+                  options: { type: object, additionalProperties: true }
+
+  /api/auth/passkey/finish:
+    post:
+      tags: [Account]
+      summary: Complete a passwordless sign-in
+      description: |
+        A passkey is already two factors — something you have, unlocked by
+        something you are or know — so it signs in on its own without the code.
+        An authenticator whose signature counter has gone backwards is refused:
+        that is what a cloned key looks like.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge, response]
+              properties:
+                challenge: { type: string }
+                response: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Signed in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { description: The assertion was not accepted. }
 
   /api/me/ai/providers:
     get:
@@ -1151,6 +1433,19 @@ components:
         has_ai_key: { type: boolean }
         created_at: { type: string, format: date-time }
         last_login_at: { type: string }
+
+    Passkey:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        credential_id: { type: string }
+        transports: { type: string, examples: ["internal,hybrid"] }
+        backed_up:
+          type: boolean
+          description: Synced to a password manager or platform account rather than bound to one device.
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string }
 
     AIProvider:
       type: object

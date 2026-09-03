@@ -315,4 +315,55 @@ CREATE TABLE password_resets (
 );
 CREATE INDEX idx_password_resets_user ON password_resets(user_id, created_at DESC);
 `},
+
+	{"008_mfa_and_passkeys", `
+-- A second factor, and the codes that get somebody back in when they lose it.
+--
+-- The secret is stored as issued. It has to be: verifying a TOTP code means
+-- recomputing it, so there is nothing to hash and the database is the thing to
+-- protect. Recovery codes are different — they are checked by equality, so
+-- only their hashes are kept.
+ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN totp_confirmed_at TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE recovery_codes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT NOT NULL UNIQUE,
+  used_at    TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_recovery_codes_user ON recovery_codes(user_id);
+
+-- Passkeys. The public key is public by definition; what matters is that the
+-- credential id is unique and the signature counter only ever moves forward.
+CREATE TABLE webauthn_credentials (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credential_id TEXT NOT NULL UNIQUE,
+  public_key    TEXT NOT NULL,
+  attestation   TEXT NOT NULL DEFAULT '',
+  transports    TEXT NOT NULL DEFAULT '',
+  sign_count    INTEGER NOT NULL DEFAULT 0,
+  backed_up     INTEGER NOT NULL DEFAULT 0,
+  name          TEXT NOT NULL DEFAULT '',
+  created_at    TEXT NOT NULL,
+  last_used_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_webauthn_user ON webauthn_credentials(user_id);
+
+-- Short-lived state for anything that takes two requests: the half-finished
+-- login waiting on a second factor, and both WebAuthn ceremonies. Kept in the
+-- database rather than in memory so a restart mid-ceremony fails cleanly
+-- instead of mysteriously.
+CREATE TABLE auth_challenges (
+  token      TEXT PRIMARY KEY,
+  user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,
+  data       TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX idx_auth_challenges_expiry ON auth_challenges(expires_at);
+`},
 }

@@ -76,12 +76,28 @@
       <button class="btn btn-primary btn-block" type="submit" id="submit">Sign in</button>
     </form>
 
+    <div id="passkey-row" style="display:none;margin-top:.75rem">
+      <button class="btn btn-block" id="passkey-signin">🔑 Sign in with a passkey</button>
+    </div>
+
+    <form id="mfa-form" class="stack" style="gap:.85rem;display:none">
+      <p class="small muted" style="margin:0" id="mfa-intro"></p>
+      <div class="field">
+        <label for="mfa-code">Six-digit code</label>
+        <input id="mfa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="14" placeholder="000000">
+        <span class="hint">Or one of your recovery codes, if your phone is not to hand.</span>
+      </div>
+      <button class="btn btn-primary btn-block" type="submit" id="mfa-submit">Continue</button>
+      <button class="btn btn-ghost btn-block" type="button" id="mfa-cancel">Start again</button>
+    </form>
+
     <div class="switcher" id="switcher"></div>
   </div>
 </div>
 
 <script type="module">
 import { api, toast } from '/js/api.js?v=__BUILD__';
+import { passkeysSupported, getPasskey } from '/js/webauthn.js?v=__BUILD__';
 
 let mode = 'login';
 let config = {};
@@ -149,6 +165,8 @@ function setMode(next) {
   $('#password').setAttribute('autocomplete', registering ? 'new-password' : 'current-password');
   const forgotRow = document.querySelector('#forgot-row');
   if (forgotRow && config.password_reset_enabled) forgotRow.style.display = registering ? 'none' : '';
+  const pkRow = document.querySelector('#passkey-row');
+  if (pkRow && config.passkeys_enabled && passkeysSupported()) pkRow.style.display = registering ? 'none' : '';
   $('#invite-field').style.display = registering && config.registration === 'invite' ? '' : 'none';
   $('#error').classList.add('hidden');
 
@@ -179,7 +197,14 @@ $('#form').addEventListener('submit', async e => {
       if (invite) body.invite = invite;
       await api.post('/api/auth/register', body);
     } else {
-      await api.post('/api/auth/login', body);
+      const res = await api.post('/api/auth/login', body);
+      // A correct password is only the first half when a second factor is on.
+      if (res && res.mfa_required) {
+        showMFAStep(res);
+        btn.disabled = false;
+        btn.textContent = original;
+        return;
+      }
     }
     window.location.href = '/app';
   } catch (err) {
@@ -215,9 +240,65 @@ function wireForgot() {
   });
 }
 
+let mfaChallenge = null;
+
+function showMFAStep(res) {
+  mfaChallenge = res.challenge;
+  $('#form').style.display = 'none';
+  const row = document.querySelector('#passkey-row');
+  if (row) row.style.display = 'none';
+  const switcher = document.querySelector('#switcher');
+  if (switcher) switcher.style.display = 'none';
+  $('#mfa-form').style.display = '';
+  $('#mfa-intro').textContent = res.message || 'Enter the code from your authenticator app.';
+  $('#mfa-code').focus();
+}
+
+$('#mfa-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('#mfa-submit');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  try {
+    await api.post('/api/auth/mfa', { challenge: mfaChallenge, code: $('#mfa-code').value.trim() });
+    window.location.href = '/app';
+  } catch (err) {
+    showError(err.message);
+    btn.disabled = false;
+    btn.textContent = 'Continue';
+  }
+});
+
+$('#mfa-cancel').addEventListener('click', () => window.location.reload());
+
+/* Passkey sign-in asks for no email: a discoverable credential carries who it
+ * belongs to, so the browser offers the right one and the page never has to
+ * know who is signing in. */
+function wirePasskey() {
+  const row = document.querySelector('#passkey-row');
+  if (!config.passkeys_enabled || !passkeysSupported()) return;
+  row.style.display = '';
+  document.querySelector('#passkey-signin').addEventListener('click', async () => {
+    const btn = document.querySelector('#passkey-signin');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Follow your browser…';
+    try {
+      const { challenge, options } = await api.post('/api/auth/passkey/begin', {});
+      const response = await getPasskey(options);
+      await api.post('/api/auth/passkey/finish', { challenge, response });
+      window.location.href = '/app';
+    } catch (err) {
+      if (err.name !== 'NotAllowedError' && err.name !== 'AbortError') showError(err.message);
+      btn.disabled = false;
+      btn.innerHTML = '🔑 Sign in with a passkey';
+    }
+  });
+}
+
 (async () => {
   try { config = await api.config(); } catch { config = {}; }
   wireForgot();
+  wirePasskey();
   renderOAuth();
   renderDemo();
   const params = new URLSearchParams(window.location.search);

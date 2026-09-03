@@ -67,7 +67,7 @@ type Server struct {
 func (s *Server) assetStamp() string {
 	s.stampOnce.Do(func() {
 		sum := sha256.New()
-		for _, name := range []string{"js/app.js", "js/api.js", "js/charts.js", "css/app.css"} {
+		for _, name := range []string{"js/app.js", "js/api.js", "js/charts.js", "js/webauthn.js", "css/app.css"} {
 			b, err := fs.ReadFile(s.Static, name)
 			if err != nil {
 				log.Printf("fingerprint %s: %v", name, err)
@@ -116,6 +116,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/demo", s.handleDemoLogin)
 	mux.HandleFunc("POST /api/auth/forgot", s.handleForgotPassword)
 	mux.HandleFunc("POST /api/auth/reset", s.handleResetPassword)
+	mux.HandleFunc("POST /api/auth/mfa", s.handleMFAChallenge)
+	mux.HandleFunc("POST /api/auth/passkey/begin", s.handlePasskeyLoginBegin)
+	mux.HandleFunc("POST /api/auth/passkey/finish", s.handlePasskeyLoginFinish)
 	mux.HandleFunc("GET /auth/{provider}/start", s.handleOAuthStart)
 	mux.HandleFunc("GET /auth/{provider}/callback", s.handleOAuthCallback)
 	// Where go-login lands; pool swaps its token for a session here.
@@ -131,6 +134,17 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("PUT /api/me/ai/providers", authed(s.handleSetAIProvider))
 	mux.Handle("DELETE /api/me/ai/providers/{kind}/{slot}", authed(s.handleDeleteAIProvider))
 	mux.Handle("GET /api/me/ai/balance", authed(s.handleAIBalance))
+
+	mux.Handle("GET /api/me/mfa", authed(s.handleMFAStatus))
+	mux.Handle("POST /api/me/mfa/totp/begin", authed(s.handleTOTPBegin))
+	mux.Handle("GET /api/me/mfa/totp/qr", authed(s.handleTOTPQR))
+	mux.Handle("POST /api/me/mfa/totp/confirm", authed(s.handleTOTPConfirm))
+	mux.Handle("POST /api/me/mfa/totp/disable", authed(s.handleTOTPDisable))
+	mux.Handle("POST /api/me/mfa/recovery-codes", authed(s.handleRecoveryCodesRegenerate))
+	mux.Handle("POST /api/me/passkeys/begin", authed(s.handlePasskeyRegisterBegin))
+	mux.Handle("POST /api/me/passkeys/finish", authed(s.handlePasskeyRegisterFinish))
+	mux.Handle("PATCH /api/me/passkeys/{id}", authed(s.handleRenamePasskey))
+	mux.Handle("DELETE /api/me/passkeys/{id}", authed(s.handleDeletePasskey))
 	mux.Handle("POST /api/demo/reset", authed(s.handleDemoReset))
 
 	mux.Handle("GET /api/keys", authed(s.handleListAPIKeys))

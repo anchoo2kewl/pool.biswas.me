@@ -35,6 +35,9 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 		// The sign-in page offers a password reset only when there is a
 		// gateway to send one through.
 		"password_reset_enabled": s.Cfg.MailEnabled(),
+		// Passkeys need a secure context; the browser enforces that, so the
+		// page should not offer a button that fails with no explanation.
+		"passkeys_enabled": s.webAuthnConfigured(),
 		// Published on purpose: this is the point of a demo account.
 		"demo_email":    s.Cfg.DemoEmail,
 		"demo_password": s.Cfg.DemoPassword,
@@ -140,6 +143,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	user, err := s.DB.UserByID(id)
 	if err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	// A correct password is only the first half when a second factor is on.
+	// No session exists until the code comes back.
+	if user.MFAEnabled {
+		s.beginMFAChallenge(w, user)
 		return
 	}
 	s.startSession(w, r, user)

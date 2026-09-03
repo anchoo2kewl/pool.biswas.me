@@ -4,6 +4,7 @@
 
 import { api, toast } from './api.js?v=__BUILD__';
 import { lineChart, barChart, areaChart, lsiGauge, cadenceStrip, legend, seriesColor, statusColor, fmt, escapeHtml, onResize } from './charts.js?v=__BUILD__';
+import { passkeysSupported, createPasskey } from './webauthn.js?v=__BUILD__';
 
 const state = {
   user: null,
@@ -859,6 +860,11 @@ async function renderSettings(root) {
         </div>
 
         <div class="glass card">
+          <div class="card-head"><h3>Sign-in security</h3></div>
+          <div id="mfa-panel"></div>
+        </div>
+
+        <div class="glass card">
           <div class="card-head"><h3>API keys</h3>
             <button class="btn btn-sm" id="new-key">New key</button></div>
           <p class="small muted">Everything in this app is available over the API — create a key and point a script or an agent at it. <a href="/docs" target="_blank">Read the API docs</a>.</p>
@@ -882,11 +888,245 @@ async function renderSettings(root) {
   renderSeasonsList($('#seasons-list'));
 
   await renderAIProviders();
+  await renderMFA();
   $('#refresh-balance').addEventListener('click', () => renderAIProviders({ balance: true }));
 
   $('#add-season').addEventListener('click', openSeasonForm);
   $('#new-key').addEventListener('click', openKeyForm);
   await refreshKeys();
+}
+
+/* ── Sign-in security: a second factor, and passkeys ──────────────────
+ *
+ * Two independent ways to make a stolen password useless. A code from an
+ * authenticator app is the familiar one; a passkey is the stronger one,
+ * because there is no shared secret to phish in the first place.
+ */
+async function renderMFA() {
+  const el = $('#mfa-panel');
+  if (!el) return;
+  el.innerHTML = '<div class="empty small">Loading…</div>';
+
+  let data;
+  try {
+    data = await api.mfa();
+  } catch (e) {
+    el.innerHTML = `<div class="small err">${escapeHtml(e.message)}</div>`;
+    return;
+  }
+
+  const t = data.totp || {};
+  const keys = data.passkeys || [];
+  const low = t.enabled && t.recovery_codes_left <= 3;
+
+  el.innerHTML = `
+    <div style="margin-bottom:1.1rem">
+      <div class="row" style="align-items:baseline;margin-bottom:.35rem">
+        <strong class="small">Two-factor authentication</strong>
+        <span class="spacer"></span>
+        <span class="pill ${t.enabled ? 'pill-good' : 'pill-unknown'}"><span class="dot"></span>${t.enabled ? 'On' : 'Off'}</span>
+      </div>
+      <p class="small muted" style="margin:0 0 .5rem">A six-digit code from an authenticator app, asked for after your
+        password. It makes a stolen password useless on its own.</p>
+      ${t.enabled ? `
+        <p class="small ${low ? 'err' : 'dim'}" style="margin:0 0 .5rem">
+          ${t.recovery_codes_left} of ${t.recovery_code_total} recovery codes left${low ? ' — worth generating a new set.' : '.'}</p>
+        <div class="row" style="gap:.5rem">
+          <button class="btn btn-sm" id="mfa-codes">New recovery codes</button>
+          <button class="btn btn-sm btn-ghost btn-danger" id="mfa-off">Turn off</button>
+        </div>
+      ` : `
+        <button class="btn btn-sm btn-primary" id="mfa-on">${t.pending ? 'Finish setting it up' : 'Turn on'}</button>
+      `}
+    </div>
+
+    <div>
+      <div class="row" style="align-items:baseline;margin-bottom:.35rem">
+        <strong class="small">Passkeys</strong>
+        <span class="spacer"></span>
+        <span class="pill ${keys.length ? 'pill-good' : 'pill-unknown'}"><span class="dot"></span>${keys.length || 'none'}</span>
+      </div>
+      <p class="small muted" style="margin:0 0 .5rem">Sign in with your fingerprint, face or a hardware key — no password
+        to type and nothing that can be phished, because the key never leaves your device.</p>
+      ${keys.length ? `<div class="stack" style="gap:.3rem;margin-bottom:.5rem">
+        ${keys.map(k => `
+          <div class="row small" style="gap:.5rem;padding:.4rem .6rem;border-radius:8px;background:rgba(255,255,255,.03)">
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escapeHtml(k.name)}</span>
+            <span class="dim">${k.last_used_at ? `used ${fmt.date(k.last_used_at)}` : 'never used'}</span>
+            ${k.backed_up ? '<span class="dim" title="Synced to your password manager or platform account">synced</span>' : ''}
+            <button class="btn btn-sm btn-ghost btn-danger" data-drop-key="${k.id}">×</button>
+          </div>`).join('')}
+      </div>` : ''}
+      ${data.passkeys_enabled
+        ? `<button class="btn btn-sm" id="passkey-add">Add a passkey</button>`
+        : '<p class="small dim" style="margin:0">Passkeys need a secure connection, so they are unavailable on this instance.</p>'}
+    </div>`;
+
+  const on = $('#mfa-on', el);
+  if (on) on.addEventListener('click', openTOTPSetup);
+
+  const off = $('#mfa-off', el);
+  if (off) off.addEventListener('click', () => confirmWithPassword(
+    'Turn off two-factor authentication',
+    'Your account will be protected by its password alone, and the recovery codes that went with it stop working.',
+    'Turn it off',
+    async pw => { await api.totpDisable(pw); toast('Two-factor authentication is off', 'ok'); await renderMFA(); }));
+
+  const codes = $('#mfa-codes', el);
+  if (codes) codes.addEventListener('click', () => confirmWithPassword(
+    'New recovery codes',
+    'This replaces your current codes. The old ones stop working immediately.',
+    'Generate',
+    async pw => { const res = await api.regenerateRecoveryCodes(pw); showRecoveryCodes(res.recovery_codes); await renderMFA(); }));
+
+  const add = $('#passkey-add', el);
+  if (add) add.addEventListener('click', () => addPasskey(add));
+
+  $$('[data-drop-key]', el).forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Remove this passkey? You will not be able to sign in with it again.')) return;
+    try {
+      await api.deletePasskey(Number(b.dataset.dropKey));
+      toast('Passkey removed', 'ok');
+      await renderMFA();
+    } catch (e) { toast(e.message, 'err'); }
+  }));
+}
+
+/* Anything that weakens the account asks for the password again, so an
+ * unlocked browser left on a desk is not enough to undo the protection. */
+function confirmWithPassword(title, warning, action, run) {
+  modal(title, `
+    <div class="stack" style="gap:.85rem">
+      <p class="small muted" style="margin:0">${escapeHtml(warning)}</p>
+      <div class="field"><label for="cp-pw">Your password</label>
+        <input id="cp-pw" type="password" autocomplete="current-password"></div>
+      <button class="btn btn-primary btn-block" id="cp-go">${escapeHtml(action)}</button>
+    </div>`, (body, close) => {
+    $('#cp-go', body).addEventListener('click', async () => {
+      const btn = $('#cp-go', body);
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        await run($('#cp-pw', body).value);
+        close();
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false;
+        btn.textContent = action;
+      }
+    });
+  });
+}
+
+function openTOTPSetup() {
+  modal('Turn on two-factor authentication', '<div class="empty small">Preparing…</div>', async (body, close) => {
+    let setup;
+    try {
+      setup = await api.totpBegin();
+    } catch (e) {
+      body.innerHTML = `<div class="small err">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    body.innerHTML = `
+      <div class="stack" style="gap:.85rem">
+        <p class="small muted" style="margin:0">Scan this with an authenticator app — 1Password, Bitwarden, Google
+          Authenticator, whichever you use — then type the six digits it shows.</p>
+        <div style="display:grid;place-items:center">
+          <img src="${escapeHtml(setup.qr_url)}" alt="Enrolment QR code" width="220" height="220"
+               style="background:#fff;padding:.5rem;border-radius:10px">
+        </div>
+        <details>
+          <summary class="small dim" style="cursor:pointer">Can't scan it?</summary>
+          <p class="small" style="margin:.5rem 0 0">Enter this key by hand:</p>
+          <pre style="margin:.3rem 0 0;white-space:pre-wrap;word-break:break-all">${escapeHtml(setup.secret)}</pre>
+        </details>
+        <div class="field"><label for="totp-code">The six digits</label>
+          <input id="totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"></div>
+        <button class="btn btn-primary btn-block" id="totp-go">Turn it on</button>
+      </div>`;
+
+    const submit = async () => {
+      const btn = $('#totp-go', body);
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        const res = await api.totpConfirm($('#totp-code', body).value.trim());
+        close();
+        showRecoveryCodes(res.recovery_codes);
+        await renderMFA();
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false;
+        btn.textContent = 'Turn it on';
+      }
+    };
+    $('#totp-go', body).addEventListener('click', submit);
+    $('#totp-code', body).addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    $('#totp-code', body).focus();
+  });
+}
+
+/* Shown once, and deliberately hard to click past: these are the only way back
+ * in if the phone is lost. */
+function showRecoveryCodes(codes) {
+  modal('Save your recovery codes', `
+    <div class="stack" style="gap:.85rem">
+      <p class="small" style="margin:0"><strong>This is the only time these are shown.</strong> Each works once, in place
+        of a code from your app. Keep them somewhere you can reach without your phone.</p>
+      <pre style="margin:0;white-space:pre-wrap;line-height:1.9">${codes.map(escapeHtml).join('\n')}</pre>
+      <div class="row" style="gap:.5rem">
+        <button class="btn btn-sm" id="rc-copy">Copy</button>
+        <button class="btn btn-sm" id="rc-download">Download</button>
+        <div class="spacer"></div>
+        <button class="btn btn-sm btn-primary" id="rc-done">I have saved them</button>
+      </div>
+    </div>`, (body, close) => {
+    $('#rc-copy', body).addEventListener('click', () =>
+      navigator.clipboard.writeText(codes.join('\n')).then(() => toast('Copied', 'ok')));
+    $('#rc-download', body).addEventListener('click', () => {
+      const blob = new Blob([`Pool recovery codes\n\n${codes.join('\n')}\n`], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'pool-recovery-codes.txt';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+    $('#rc-done', body).addEventListener('click', close);
+  });
+}
+
+async function addPasskey(btn) {
+  if (!passkeysSupported()) {
+    toast('This browser does not support passkeys', 'err');
+    return;
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Follow your browser…';
+  try {
+    const { challenge, options } = await api.passkeyRegisterBegin();
+    const response = await createPasskey(options);
+    const name = defaultPasskeyName();
+    await api.passkeyRegisterFinish({ challenge, name, response });
+    toast('Passkey added', 'ok');
+    await renderMFA();
+  } catch (e) {
+    // A cancelled browser prompt is a choice, not a failure worth shouting at.
+    if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') toast(e.message, 'err');
+    btn.disabled = false;
+    btn.textContent = 'Add a passkey';
+  }
+}
+
+/* Names it after the device it was made on, so a list of three keys is not
+ * three identical rows. */
+function defaultPasskeyName() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad/.test(ua)) return 'iPhone or iPad';
+  if (/Android/.test(ua)) return 'Android device';
+  if (/Mac OS X/.test(ua)) return 'Mac';
+  if (/Windows/.test(ua)) return 'Windows PC';
+  if (/Linux/.test(ua)) return 'Linux device';
+  return 'Passkey';
 }
 
 /* ── AI providers ─────────────────────────────────────────────────────

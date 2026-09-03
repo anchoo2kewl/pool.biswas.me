@@ -95,6 +95,16 @@ export const api = {
   deleteAIProvider: (kind, slot) => request('DELETE', `/api/me/ai/providers/${kind}/${slot}`),
   aiBalance: () => request('GET', '/api/me/ai/balance'),
 
+  mfa: () => request('GET', '/api/me/mfa'),
+  totpBegin: () => request('POST', '/api/me/mfa/totp/begin', {}),
+  totpConfirm: (code) => request('POST', '/api/me/mfa/totp/confirm', { code }),
+  totpDisable: (password) => request('POST', '/api/me/mfa/totp/disable', { password }),
+  regenerateRecoveryCodes: (password) => request('POST', '/api/me/mfa/recovery-codes', { password }),
+  passkeyRegisterBegin: () => request('POST', '/api/me/passkeys/begin', {}),
+  passkeyRegisterFinish: (b) => request('POST', '/api/me/passkeys/finish', b),
+  renamePasskey: (id, name) => request('PATCH', `/api/me/passkeys/${id}`, { name }),
+  deletePasskey: (id) => request('DELETE', `/api/me/passkeys/${id}`),
+
   summary: (poolID) => request('GET', `/api/analytics/summary?pool_id=${poolID}`),
   costs: (params) => request('GET', `/api/analytics/costs?${new URLSearchParams(params)}`),
   trends: (params) => request('GET', `/api/analytics/trends?${new URLSearchParams(params)}`),

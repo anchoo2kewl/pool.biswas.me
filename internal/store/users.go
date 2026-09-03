@@ -7,17 +7,20 @@ import (
 	"time"
 )
 
-const userCols = `id, email, name, role, COALESCE(ai_api_key,''), COALESCE(ai_base_url,''), COALESCE(ai_model,''), created_at, COALESCE(last_login_at,'')`
+const userCols = `id, email, name, role, COALESCE(ai_api_key,''), COALESCE(ai_base_url,''), COALESCE(ai_model,''), created_at, COALESCE(last_login_at,''), COALESCE(totp_confirmed_at,'')`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
-	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AIAPIKey, &u.AIBaseURL, &u.AIModel, &u.CreatedAt, &u.LastLoginAt); err != nil {
+	var totpConfirmed string
+	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.AIAPIKey, &u.AIBaseURL, &u.AIModel,
+		&u.CreatedAt, &u.LastLoginAt, &totpConfirmed); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	u.HasAIKey = u.AIAPIKey != ""
+	u.MFAEnabled = totpConfirmed != ""
 	return &u, nil
 }
 

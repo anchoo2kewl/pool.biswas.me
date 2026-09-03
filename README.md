@@ -126,6 +126,14 @@ photo endpoint answers `412`, and everything else works exactly as before.
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | Enables Google sign-in |
 | `GH_CLIENT_ID` / `GH_CLIENT_SECRET` | — | Enables GitHub sign-in |
 | `OAUTH_STATE_SECRET` | random | Set a stable value, or sign-ins break across restarts |
+| `POOL_MAIL_URL` / `POOL_MAIL_KEY` / `POOL_MAIL_FROM` | — | A go-email gateway. Enables password reset |
+
+**Sign-in security.** Each account can add a second factor — a six-digit code
+from an authenticator app, with ten single-use recovery codes for when the
+phone is gone — and register passkeys, which sign in with a fingerprint, face
+or hardware key and have no shared secret to phish. Both are under Settings.
+Password reset needs a mail gateway (`POOL_MAIL_*`); without one it is hidden
+rather than offered and broken.
 
 Each OAuth provider appears on the sign-in page only when both its ID and secret
 are set. Callback URLs are `${POOL_APP_URL}/auth/google/callback` and

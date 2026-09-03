@@ -14,6 +14,9 @@ type User struct {
 	LastLoginAt string `json:"last_login_at,omitempty"`
 	// HasAIKey reports whether an LLM key is configured, without exposing it.
 	HasAIKey bool `json:"has_ai_key"`
+	// MFAEnabled reports whether a confirmed second factor stands between a
+	// password and a session.
+	MFAEnabled bool `json:"mfa_enabled"`
 }
 
 // Company is a pool store, service contractor, or the owner themselves.
