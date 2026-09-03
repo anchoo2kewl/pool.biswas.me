@@ -2,6 +2,9 @@
 package api
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -36,6 +39,37 @@ type Server struct {
 	photoOnce sync.Once
 	photos    *gophoto.Store
 	photoErr  error
+
+	// stampOnce computes the front-end fingerprint once, on first request.
+	stampOnce sync.Once
+	stamp     string
+}
+
+// assetStamp fingerprints the embedded front-end.
+//
+// Every asset URL carries it, so a deploy that changes a stylesheet or a
+// script changes the URL that fetches it. That matters because the CDN in
+// front of this rewrites the origin's no-cache into a four-hour max-age: a
+// change to the interface was otherwise invisible to anyone who had loaded
+// the page recently, which is a confusing way to ship a new button.
+//
+// Hashing the content rather than stamping the build means the URL changes
+// exactly when the file does — so a redeploy of identical assets keeps them
+// cached, and a local edit busts them without a version to remember.
+func (s *Server) assetStamp() string {
+	s.stampOnce.Do(func() {
+		sum := sha256.New()
+		for _, name := range []string{"js/app.js", "js/api.js", "js/charts.js", "css/app.css"} {
+			b, err := fs.ReadFile(s.Static, name)
+			if err != nil {
+				log.Printf("fingerprint %s: %v", name, err)
+				continue
+			}
+			sum.Write(b)
+		}
+		s.stamp = hex.EncodeToString(sum.Sum(nil))[:12]
+	})
+	return s.stamp
 }
 
 // New builds the server. A nil AI service simply leaves the AI features off.
@@ -328,11 +362,34 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if strings.HasPrefix(path, "assets/") {
+	switch {
+	case strings.HasPrefix(path, "assets/"):
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	} else {
+	case r.URL.Query().Get("v") != "":
+		// The URL carries the fingerprint of its own content, so it can be
+		// cached hard: a change to the file produces a different URL.
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	case strings.HasSuffix(path, ".html"):
+		// The shell names the fingerprinted assets, so it is the one thing
+		// that must never be stale. no-store rather than no-cache, because
+		// the CDN rewrites the latter into a four-hour max-age.
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+	default:
 		w.Header().Set("Cache-Control", "no-cache")
 	}
+
+	// Substitute the fingerprint into anything that references another asset.
+	// Done on the way out rather than at build time so there is no build step
+	// to run and nothing to forget.
+	if strings.HasSuffix(path, ".html") || strings.HasSuffix(path, ".js") {
+		body, err := fs.ReadFile(s.Static, path)
+		if err == nil && bytes.Contains(body, []byte("__BUILD__")) {
+			body = bytes.ReplaceAll(body, []byte("__BUILD__"), []byte(s.assetStamp()))
+			http.ServeContent(w, r, stat.Name(), stat.ModTime(), bytes.NewReader(body))
+			return
+		}
+	}
+
 	rs, ok := f.(interface {
 		Read([]byte) (int, error)
 		Seek(int64, int) (int64, error)

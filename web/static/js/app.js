@@ -2,8 +2,8 @@
  * State is deliberately a plain object — the app is small enough that a
  * framework would cost more than it saves. */
 
-import { api, toast } from './api.js';
-import { lineChart, barChart, areaChart, lsiGauge, cadenceStrip, legend, seriesColor, statusColor, fmt, escapeHtml, onResize } from './charts.js';
+import { api, toast } from './api.js?v=__BUILD__';
+import { lineChart, barChart, areaChart, lsiGauge, cadenceStrip, legend, seriesColor, statusColor, fmt, escapeHtml, onResize } from './charts.js?v=__BUILD__';
 
 const state = {
   user: null,
