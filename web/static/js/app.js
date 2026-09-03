@@ -1068,6 +1068,13 @@ function openTestForm(parsed, photo) {
   });
 }
 
+/* True on a phone or tablet: a coarse pointer means there is a camera worth
+ * leading with, and a file picker is the awkward path rather than the obvious
+ * one. Used only to decide which button looks primary. */
+function touchDevice() {
+  return window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+}
+
 /* ── Add a test from a photograph ─────────────────────────────────────
  *
  * The whole printout — twenty readings, the date, who tested it — becomes a
@@ -1078,12 +1085,22 @@ function openTestForm(parsed, photo) {
 function openPhotoTestForm() {
   modal('Add a test from a photo', `
     <div class="stack" style="gap:.85rem" id="photo-step-1">
-      <p class="small muted" style="margin:0">Photograph the printout from the pool store. The readings are
-        transcribed, scored against this pool, and analysed — you can correct anything afterwards.</p>
+      <p class="small muted" style="margin:0">Point your phone at the printout from the pool store, or upload a
+        picture you already have. The readings, the date and who tested it are read off the sheet and filled in
+        for you.</p>
       <div class="field">
-        <label for="p-file">Photo of the test sheet</label>
-        <input id="p-file" type="file" accept="image/*" capture="environment">
-        <span class="hint">Images only, up to 25 MB. Held straight and in focus reads best.</span>
+        <label>Photo of the test sheet</label>
+        <div class="grid grid-2" style="gap:.5rem">
+          <button type="button" class="btn ${touchDevice() ? 'btn-primary' : ''}" id="p-shoot">📷 Take a photo</button>
+          <button type="button" class="btn ${touchDevice() ? '' : 'btn-primary'}" id="p-choose">🖼 Choose a file</button>
+        </div>
+        <span class="hint">Images only, up to 25 MB. Held straight, in focus, and filling the frame reads best.</span>
+        <!-- Two inputs rather than one: capture="environment" opens the phone's
+             rear camera directly, which is what you want with the sheet in your
+             hand, but it also stops that input offering the photo library or a
+             file on a desktop. So each way in gets its own. -->
+        <input id="p-camera" type="file" accept="image/*" capture="environment" style="display:none">
+        <input id="p-file" type="file" accept="image/*" style="display:none">
       </div>
       <div id="p-preview"></div>
       <div class="grid grid-2" style="gap:.75rem">
@@ -1103,23 +1120,31 @@ function openPhotoTestForm() {
         </select>
         <span class="hint">A transcription is a model reading a photograph, not a measurement — checking twenty numbers against the sheet is quicker than typing them.</span>
       </div>
-      <button class="btn btn-primary btn-block" id="p-go">Read the sheet</button>
+      <button class="btn btn-primary btn-block" id="p-go" disabled>Read the sheet</button>
     </div>`, (body, close) => {
-    const fileInput = $('#p-file', body);
+    // Whichever way the picture arrived, everything downstream is the same.
+    let chosen = null;
 
-    fileInput.addEventListener('change', () => {
-      const file = fileInput.files[0];
+    const takeFile = file => {
+      chosen = file || null;
       const preview = $('#p-preview', body);
-      if (!file) { preview.innerHTML = ''; return; }
-      const url = URL.createObjectURL(file);
-      preview.innerHTML = `<img src="${url}" alt="The sheet you are about to upload"
-        style="width:100%;max-height:260px;object-fit:contain;border-radius:10px;border:1px solid var(--glass-border)">`;
+      if (!chosen) { preview.innerHTML = ''; return; }
+      const url = URL.createObjectURL(chosen);
+      preview.innerHTML = `<img src="${url}" alt="The sheet you are about to read"
+        style="width:100%;max-height:260px;object-fit:contain;border-radius:10px;border:1px solid var(--glass-border)">
+        <p class="small dim" style="margin:.4rem 0 0">${escapeHtml(chosen.name || 'photo')} · ${(chosen.size / (1 << 20)).toFixed(1)} MB</p>`;
       preview.firstElementChild.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
-    });
+      $('#p-go', body).disabled = false;
+    };
+
+    $('#p-shoot', body).addEventListener('click', () => $('#p-camera', body).click());
+    $('#p-choose', body).addEventListener('click', () => $('#p-file', body).click());
+    $('#p-camera', body).addEventListener('change', e => takeFile(e.target.files[0]));
+    $('#p-file', body).addEventListener('change', e => takeFile(e.target.files[0]));
 
     $('#p-go', body).addEventListener('click', async () => {
-      const file = fileInput.files[0];
-      if (!file) return toast('Choose a photo first', 'err');
+      const file = chosen;
+      if (!file) return toast('Take a photo or choose a file first', 'err');
 
       const btn = $('#p-go', body);
       btn.disabled = true;
