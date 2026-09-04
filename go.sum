@@ -2,8 +2,8 @@ github.com/anchoo2kewl/go-ai v0.2.0 h1:/SPAKJ6blUAZrJLWfjCc3oXP2UWjkFWbkawlGd6ku
 github.com/anchoo2kewl/go-ai v0.2.0/go.mod h1:a2MiguvP/hs9iiKQcEkj21K5J0N9ye+OkSV4B77W2Ws=
 github.com/anchoo2kewl/go-api v0.1.0 h1:l3OhNU+RCJL5WbGKfL45Yz1SQiczykZRLaiKfkSMmRo=
 github.com/anchoo2kewl/go-api v0.1.0/go.mod h1:JryzYEUdEs/fJlC0c9aK+l6ppnmrn8N2/9sRr8ktnww=
-github.com/anchoo2kewl/go-login v0.2.1 h1:u7YzEEeCUlAvxBTb19yVVHcAH0LtCaW5/wtqbDTb7RA=
-github.com/anchoo2kewl/go-login v0.2.1/go.mod h1:EyE+DCIMUFTm95JcDtlgqYBOypCBmok/0gO15fCvHvY=
+github.com/anchoo2kewl/go-login v0.3.0 h1:tWZNDJ/aEKNd7O2RudDUt25I+JAlOeEt+ae70nGysxU=
+github.com/anchoo2kewl/go-login v0.3.0/go.mod h1:hMT0Ztc40lUblPrzqfm/NmfILcclvei9eS6NUD90oCQ=
 github.com/anchoo2kewl/go-photo v0.1.1 h1:qGXs5/maI0ukTg1gt7ZHHwAoQnfEPlGytwgbuHa57Y4=
 github.com/anchoo2kewl/go-photo v0.1.1/go.mod h1:6RGRFI0EM+9t/3OYARDW4UyRxdtYIIgpkyTany5JUnI=
 github.com/ebitengine/purego v0.10.0-alpha.2 h1:aUB+wqQ6KpzMMOskWW4jOvxTfJEctVtFxSxUHv3md+8=

@@ -11,8 +11,9 @@ import (
 
 	"github.com/skip2/go-qrcode"
 
+	gologin "github.com/anchoo2kewl/go-login"
+
 	"github.com/biswas-dev/pool/internal/auth"
-	"github.com/biswas-dev/pool/internal/mfa"
 	"github.com/biswas-dev/pool/internal/store"
 )
 
@@ -49,7 +50,7 @@ func (s *Server) handleMFAStatus(w http.ResponseWriter, r *http.Request) {
 			// halfway, and the interface should offer to finish or discard it.
 			"pending":             secret != "" && !confirmed,
 			"recovery_codes_left": left,
-			"recovery_code_total": mfa.RecoveryCodeCount,
+			"recovery_code_total": gologin.RecoveryCodeCount,
 		},
 		"passkeys":         keys,
 		"passkeys_enabled": s.webAuthnConfigured(),
@@ -71,7 +72,7 @@ func (s *Server) handleTOTPBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, err := mfa.NewSecret()
+	secret, err := gologin.NewTOTPSecret()
 	if err != nil {
 		log.Printf("generate totp secret: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not start setup")
@@ -83,11 +84,11 @@ func (s *Server) handleTOTPBegin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"secret":    mfa.FormatSecret(secret),
-		"uri":       mfa.URI(s.issuer(), u.Email, secret),
+		"secret":    gologin.FormatTOTPSecret(secret),
+		"uri":       gologin.TOTPURI(s.issuer(), u.Email, secret),
 		"qr_url":    "/api/me/mfa/totp/qr",
-		"digits":    mfa.Digits,
-		"period_s":  int(mfa.Step.Seconds()),
+		"digits":    gologin.TOTPDigits,
+		"period_s":  int(gologin.TOTPStep.Seconds()),
 		"next_step": "Scan the code, then enter the six digits your app shows to switch it on.",
 	})
 }
@@ -111,7 +112,7 @@ func (s *Server) handleTOTPQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	png, err := qrcode.Encode(mfa.URI(s.issuer(), u.Email, secret), qrcode.Medium, 320)
+	png, err := qrcode.Encode(gologin.TOTPURI(s.issuer(), u.Email, secret), qrcode.Medium, 320)
 	if err != nil {
 		log.Printf("render totp qr: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not draw the code")
@@ -147,12 +148,12 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "two-factor authentication is already on")
 		return
 	}
-	if !mfa.Verify(secret, req.Code, time.Now()) {
+	if !gologin.VerifyTOTP(secret, req.Code, time.Now()) {
 		writeError(w, http.StatusBadRequest, "that code is not right — check your phone's clock and try the current one")
 		return
 	}
 
-	codes, hashes, err := mfa.NewRecoveryCodes()
+	codes, hashes, err := gologin.NewRecoveryCodes()
 	if err != nil {
 		log.Printf("generate recovery codes: %v", err)
 		writeError(w, http.StatusInternalServerError, "could not generate recovery codes")
@@ -226,7 +227,7 @@ func (s *Server) handleRecoveryCodesRegenerate(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	codes, hashes, err := mfa.NewRecoveryCodes()
+	codes, hashes, err := gologin.NewRecoveryCodes()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not generate recovery codes")
 		return
@@ -272,11 +273,11 @@ func (s *Server) handleMFAChallenge(w http.ResponseWriter, r *http.Request) {
 
 	code := strings.TrimSpace(req.Code)
 	switch {
-	case mfa.Verify(secret, code, time.Now()):
+	case gologin.VerifyTOTP(secret, code, time.Now()):
 		// A code from the authenticator.
 	default:
 		// Or one of the recovery codes, spent as it is used.
-		used, err := s.DB.UseRecoveryCode(user.ID, mfa.HashRecoveryCode(code))
+		used, err := s.DB.UseRecoveryCode(user.ID, gologin.HashRecoveryCode(code))
 		if err != nil {
 			writeStoreError(w, err)
 			return
